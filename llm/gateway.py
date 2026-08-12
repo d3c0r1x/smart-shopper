@@ -125,13 +125,16 @@ class LLMGateway:
             else VISION_CHAINS[self._profile]
         last_error: Exception | None = None
         deadline = time.monotonic() + config.STRUCTURED_MAX_SECONDS
+        # бюджет списывается один раз на структурный вызов (не на каждую
+        # модель цепочки): иначе 4 неудачные попытки из-за 429 апстрима
+        # сжигали бы лимит в 4 раза быстрее, чем реальные успешные ответы
+        await self._db.budget_increment(day)
         for model in chain:
             if time.monotonic() > deadline:
                 logger.warning("Время вызова %s превысило потолок %.0f с — "
                                "фолбэк на mock", kind, config.STRUCTURED_MAX_SECONDS)
                 break
             await self._throttle()
-            await self._db.budget_increment(day)
             try:
                 # потолок соблюдается и внутри вызова: остаток бюджета
                 remaining = deadline - time.monotonic()

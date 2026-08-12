@@ -226,6 +226,16 @@ def test_cors_headers_and_preflight():
             assert resp.headers.get("Access-Control-Allow-Origin") == "*"
             assert "GET" in resp.headers.get(
                 "Access-Control-Allow-Methods", "")
+
+            # заголовки должны быть и на ОШИБКАХ: браузерный fetch иначе
+            # блокирует ответ как CORS-нарушение (регрессия: 401 без CORS)
+            resp = await client.get(
+                "/api/search",
+                params={"q": "тест"},
+                headers={"Origin": "https://d3c0r1x.github.io"})
+            assert resp.status == 401
+            assert resp.headers.get(
+                "Access-Control-Allow-Origin") == "*"
         finally:
             await client.close()
             await ctx.db.close()

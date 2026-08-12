@@ -168,24 +168,27 @@ async def _auth_middleware(request: web.Request, handler):
     return await handler(request)
 
 
-@web.middleware
-async def _cors_middleware(request: web.Request, handler):
-    """CORS для Mini App: браузер на другом домене (GitHub Pages) делает
-    fetch на этот API. Разрешаем все источники — токен авторизации
-    (initData / X-API-Token) защищает эндпоинты, cookies не используются."""
-    if request.method == "OPTIONS":
-        return web.Response(headers=_cors_headers())
-    resp = await handler(request)
-    resp.headers.update(_cors_headers())
-    return resp
-
-
 def _cors_headers() -> dict:
     return {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "X-API-Token, Content-Type",
     }
+
+
+async def _on_prepare_cors(request: web.Request, response: web.StreamResponse):
+    """CORS для Mini App: заголовки на ВСЕХ ответах, включая ошибки
+    (HTTPException). Origin в preflight не проверяем — токен авторизации
+    (initData / X-API-Token) защищает эндпоинты, cookies не используются."""
+    response.headers.update(_cors_headers())
+
+
+@web.middleware
+async def _cors_preflight(request: web.Request, handler):
+    """OPTIONS-preflight: короткий ответ с CORS-заголовками."""
+    if request.method == "OPTIONS":
+        return web.Response(headers=_cors_headers())
+    return await handler(request)
 
 
 @web.middleware
@@ -222,8 +225,8 @@ CTX_KEY = AppKey("ctx", ApiContext)
 
 def create_app(ctx: ApiContext) -> web.Application:
     app = web.Application(
-        middlewares=[_cors_middleware, _auth_middleware,
-                     _error_middleware])
+        middlewares=[_cors_preflight, _auth_middleware, _error_middleware])
+    app.on_response_prepare.append(_on_prepare_cors)
     app[CTX_KEY] = ctx
     app.router.add_get("/api/search", handle_search)
     app.router.add_get("/api/reviews", handle_reviews)
@@ -248,8 +251,11 @@ async def _run_standalone() -> None:
     await db.connect()
     llm = LLMGateway(db)
     orch = Orchestrator(db, llm, build_adapters())
+    from matcher.matcher import compare_across_markets
+
     ctx = ApiContext(db, llm, orch, orch._adapters)
-    ctx.matcher = lambda target, candidates: None  # сравнение цен без LLM
+    ctx.matcher = lambda target, candidates: compare_across_markets(
+        llm, target, candidates)
     app = create_app(ctx)
     runner = web.AppRunner(app)
     await runner.setup()

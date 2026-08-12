@@ -27,17 +27,20 @@ function score(p: Product, q: string): number {
 function launchInfo(): { initData: string; userId: string } {
   try {
     const lp = retrieveLaunchParams();
-    return {
-      initData: String(lp.initDataRaw ?? ""),
-      userId: String(
-        (lp.initData as unknown as { user?: { id?: number } } | undefined)
-          ?.user?.id ?? "",
-      ),
-    };
+    const userId = String(
+      (lp.initData as unknown as { user?: { id?: number } } | undefined)
+        ?.user?.id ?? "",
+    );
+    return { initData: String(lp.initDataRaw ?? ""), userId };
   } catch {
-    return { initData: "", userId: "" };
+    return { initData: "", userId: "1" };
   }
 }
+
+// Вне Telegram (браузерное демо, npm run dev) SDK может вернуть объект без
+// user — подставляем демо-значение user_id; сервер (SHOPPER_API_ALLOW_ANON=1)
+// примет его из query. В реальном Telegram initData валиден и user.id всегда
+// есть — там fallback не срабатывает.
 
 async function getJson<T>(path: string, params: Record<string, string>): Promise<T> {
   const url = new URL(`${API}${path}`);
@@ -53,7 +56,7 @@ async function getJson<T>(path: string, params: Record<string, string>): Promise
 
 function authParams(): Record<string, string> {
   const { initData, userId } = launchInfo();
-  return { initData, user_id: userId };
+  return { initData, user_id: userId || "1" };
 }
 
 export async function searchProducts(
