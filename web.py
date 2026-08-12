@@ -169,6 +169,26 @@ async def _auth_middleware(request: web.Request, handler):
 
 
 @web.middleware
+async def _cors_middleware(request: web.Request, handler):
+    """CORS для Mini App: браузер на другом домене (GitHub Pages) делает
+    fetch на этот API. Разрешаем все источники — токен авторизации
+    (initData / X-API-Token) защищает эндпоинты, cookies не используются."""
+    if request.method == "OPTIONS":
+        return web.Response(headers=_cors_headers())
+    resp = await handler(request)
+    resp.headers.update(_cors_headers())
+    return resp
+
+
+def _cors_headers() -> dict:
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "X-API-Token, Content-Type",
+    }
+
+
+@web.middleware
 async def _error_middleware(request: web.Request, handler):
     try:
         return await handler(request)
@@ -201,7 +221,9 @@ CTX_KEY = AppKey("ctx", ApiContext)
 
 
 def create_app(ctx: ApiContext) -> web.Application:
-    app = web.Application(middlewares=[_auth_middleware, _error_middleware])
+    app = web.Application(
+        middlewares=[_cors_middleware, _auth_middleware,
+                     _error_middleware])
     app[CTX_KEY] = ctx
     app.router.add_get("/api/search", handle_search)
     app.router.add_get("/api/reviews", handle_reviews)
@@ -209,3 +231,42 @@ def create_app(ctx: ApiContext) -> web.Application:
     app.router.add_get("/api/budget", handle_budget)
     app.router.add_get("/health", handle_health)
     return app
+
+
+async def _run_standalone() -> None:
+    """Запуск только HTTP-API (без поллинга бота) для публичного
+    развёртывания. Mini App в этом режиме работает против демо-адаптеров
+    и реального LLM (если задан OPENROUTER_API_KEY)."""
+    import asyncio
+
+    from adapters import build_adapters
+    from core.orchestrator import Orchestrator
+    from llm.gateway import LLMGateway
+    from storage.db import Database
+
+    db = Database(config.DB_PATH)
+    await db.connect()
+    llm = LLMGateway(db)
+    orch = Orchestrator(db, llm, build_adapters())
+    ctx = ApiContext(db, llm, orch, orch._adapters)
+    ctx.matcher = lambda target, candidates: None  # сравнение цен без LLM
+    app = create_app(ctx)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", config.API_PORT)
+    await site.start()
+    logger.info("HTTP-API автономно: http://0.0.0.0:%d (LLM: %s, демо: %s)",
+                config.API_PORT, "OpenRouter" if llm.real else "mock",
+                config.DEMO_MODE)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
+        await db.close()
+        await llm.aclose()
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    asyncio.run(_run_standalone())

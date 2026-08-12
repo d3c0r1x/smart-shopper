@@ -199,3 +199,34 @@ def test_missing_query_bad_request():
             await client.close()
             await ctx.db.close()
     _run_coro(run())
+
+
+def test_cors_headers_and_preflight():
+    """Mini App с другого домена: CORS-заголовки + OPTIONS-preflight."""
+    async def run():
+        ctx = _mk_ctx()
+        await ctx.db.connect()
+        config.API_TOKEN = ""
+        app = webmod.create_app(ctx)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            resp = await client.get("/health",
+                                    headers={"Origin": "https://d3c0r1x.github.io"})
+            assert resp.status == 200
+            assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+
+            resp = await client.options(
+                "/api/search",
+                headers={
+                    "Origin": "https://d3c0r1x.github.io",
+                    "Access-Control-Request-Method": "GET",
+                })
+            assert resp.status == 200
+            assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+            assert "GET" in resp.headers.get(
+                "Access-Control-Allow-Methods", "")
+        finally:
+            await client.close()
+            await ctx.db.close()
+    _run_coro(run())

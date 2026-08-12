@@ -177,6 +177,27 @@ npm run build      # production-сборка в miniapp/dist
 Запускается вместе с ботом (один backend, два рендерера):
 `http://127.0.0.1:8081` (порт — `SHOPPER_API_PORT`).
 
+**Автономный режим** (только API, без поллинга бота — для публичного
+развёртывания):
+
+```bash
+python web.py          # http://0.0.0.0:8081, CORS включён
+```
+
+CORS-заголовки (`Access-Control-Allow-Origin: *`) разрешают браузерному
+Mini App с другого домена (GitHub Pages) обращаться к API; авторизация —
+через Telegram initData или `X-API-Token`. Публичный HTTPS-доступ можно
+дать туннелем без регистрации (пример для демо):
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8081
+# → https://<random>.trycloudflare.com
+VITE_API_URL=https://<random>.trycloudflare.com npm run build  # в miniapp/
+```
+
+Для постоянного хостинга бэкенда используйте любой PaaS/VPS
+(Dockerfile приложен); `web.py` слушает `0.0.0.0` и не зависит от бота.
+
 | Метод | Путь | Параметры |
 |---|---|---|
 | GET | `/api/search` | `q`, `markets=ozon,yandex`, `initData` |
