@@ -262,8 +262,7 @@ async def _run_standalone() -> None:
     site = web.TCPSite(runner, "0.0.0.0", config.API_PORT)
     await site.start()
     logger.info("HTTP-API автономно: http://0.0.0.0:%d (LLM: %s, демо: %s)",
-                config.API_PORT, "OpenRouter" if llm.real else "mock",
-                config.DEMO_MODE)
+                config.API_PORT, llm.provider_name, config.DEMO_MODE)
     try:
         await asyncio.Event().wait()
     finally:

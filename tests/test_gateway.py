@@ -128,3 +128,61 @@ def test_mock_calls_do_not_spend_budget():
         finally:
             await db.close()
     asyncio.run(run())
+
+
+class _NamedProvider:
+    """Провайдер с именем — имитация Mistral/OpenRouter для роутинга."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.calls: list[str] = []
+
+    async def complete(self, **kwargs):
+        self.calls.append(kwargs.get("model", ""))
+        from models import SearchConstraints
+        return SearchConstraints(query="тест", max_price=None)
+
+
+def test_provider_routing_by_prefix():
+    """'mistral:mistral-small-latest' → Mistral-провайдер; без ключа — пропуск."""
+    async def run():
+        db = _mk_db()
+        await db.connect()
+        try:
+            gw = _gateway(db)
+            mistral = _NamedProvider("mistral")
+            gw._providers = [mistral]
+            gw._provider = mistral
+
+            provider, model = gw._resolve_provider("mistral:mistral-small-latest")
+            assert provider is mistral and model == "mistral-small-latest"
+
+            provider, model = gw._resolve_provider("openrouter:openai/gpt-oss-20b:free")
+            assert provider is None  # ключа OpenRouter нет — модель пропускается
+
+            # без префикса — основной провайдер (совместимость с тестами)
+            provider, model = gw._resolve_provider("plain-model")
+            assert provider is mistral and model == "plain-model"
+        finally:
+            await db.close()
+    asyncio.run(run())
+
+
+def test_mistral_chain_calls_mistral_provider():
+    """Цепочка quality начинается с mistral: — вызов уходит в MistralProvider."""
+    async def run():
+        db = _mk_db()
+        await db.connect()
+        try:
+            gw = _gateway(db, daily_limit=1000)
+            mistral = _NamedProvider("mistral")
+            gw._providers = [mistral]
+            gw._provider = mistral
+            await gw.structured(kind="constraints",
+                                prompt="ПОЛЬЗОВАТЕЛЬ: маска",
+                                schema=SearchConstraints)
+            # профиль по умолчанию — quality, первая модель mistral-large-latest
+            assert mistral.calls and mistral.calls[0] == "mistral-large-latest"
+        finally:
+            await db.close()
+    asyncio.run(run())

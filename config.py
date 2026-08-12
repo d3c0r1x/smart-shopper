@@ -14,6 +14,9 @@ BOT_TOKEN = os.getenv("SHOPPER_BOT_TOKEN", "")
 
 # ── OpenRouter (PRD, раздел 3: лимиты и реестр :free-моделей) ────
 # Имя ключа из корневого .env портфолио — OPEN_ROUTER_KEY (вторичное).
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY",
+                       os.getenv("MISTRAL_KEY", ""))
+MISTRAL_BASE_URL = "https://api.mistral.ai/v1"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY",
                                os.getenv("OPEN_ROUTER_KEY", ""))
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

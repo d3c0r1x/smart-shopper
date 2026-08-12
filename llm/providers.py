@@ -1,9 +1,11 @@
-"""Провайдеры LLM: OpenRouter и детерминированный mock.
+"""Провайдеры LLM: Mistral, OpenRouter и детерминированный mock.
 
-OpenRouterProvider — реальные :free-модели через openai-совместимый SDK
-(base_url https://openrouter.ai/api/v1). MockProvider — оффлайн-фолбэк:
-возвращает валидные по схеме ответы на основе простых эвристик, чтобы бот
-работал без ключа (демо-режим). Выбор цепочки — в llm/gateway.py.
+Оба реальных провайдера работают через openai-совместимый SDK
+(Mistral — https://api.mistral.ai/v1, OpenRouter — https://openrouter.ai/api/v1)
+и отличаются только base_url и именем (используется роутингом цепочек
+в llm/gateway.py). MockProvider — оффлайн-фолбэк: возвращает валидные по
+схеме ответы на основе простых эвристик, чтобы бот работал без ключа
+(демо-режим).
 """
 from __future__ import annotations
 
@@ -25,12 +27,19 @@ class ProviderError(Exception):
     """Провайдер не смог вернуть валидный структурный ответ."""
 
 
-class OpenRouterProvider:
-    """Реальный провайдер OpenRouter (openai-совместимый SDK)."""
+class OpenAICompatProvider:
+    """Реальный LLM-провайдер через openai-совместимый SDK.
 
-    def __init__(self, api_key: str, base_url: str, timeout: float) -> None:
+    Параметризуется base_url и именем: Mistral и OpenRouter используют один
+    и тот же протокол /chat/completions и response_format (json_schema).
+    Имя (self.name) используется роутингом цепочек в llm/gateway.py.
+    """
+
+    def __init__(self, api_key: str, base_url: str, timeout: float,
+                 name: str) -> None:
         from openai import AsyncOpenAI
 
+        self.name = name
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url,
                                    timeout=timeout)
         self._timeout = timeout
@@ -86,6 +95,25 @@ class OpenRouterProvider:
 
     async def aclose(self) -> None:
         await self._client.close()
+
+
+class MistralProvider(OpenAICompatProvider):
+    """Mistral API (openai-совместимый, https://api.mistral.ai/v1)."""
+
+    def __init__(self, api_key: str, timeout: float) -> None:
+        from config import MISTRAL_BASE_URL
+
+        super().__init__(api_key, MISTRAL_BASE_URL, timeout, name="mistral")
+
+
+class OpenRouterProvider(OpenAICompatProvider):
+    """OpenRouter :free-модели (https://openrouter.ai/api/v1)."""
+
+    def __init__(self, api_key: str, timeout: float) -> None:
+        from config import OPENROUTER_BASE_URL
+
+        super().__init__(api_key, OPENROUTER_BASE_URL, timeout,
+                         name="openrouter")
 
 
 def _json_schema(schema: Type[BaseModel]) -> dict:

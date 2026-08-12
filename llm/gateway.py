@@ -20,7 +20,8 @@ from typing import Type
 from pydantic import BaseModel
 
 import config
-from llm.providers import MockProvider, OpenRouterProvider, ProviderError
+from llm.providers import (MistralProvider, MockProvider,
+                           OpenRouterProvider, ProviderError)
 
 logger = logging.getLogger(__name__)
 
@@ -33,29 +34,38 @@ logger = logging.getLogger(__name__)
 # модели впереди (экономия бюджета), недоступные для этого аккаунта — в
 # хвосте (цепочка всё равно до них дойдёт при ротации). Роутер
 # openrouter/free всегда последний — он сам выбирает доступную :free-модель.
+# Модели с префиксом провайдера: "mistral:..." идут через MistralProvider,
+# "openrouter:..." — через OpenRouterProvider. Если у провайдера нет ключа,
+# его модели пропускаются цепочкой. Текст — Mistral впереди (пользовательский
+# ключ), OpenRouter :free как запасной. Vision — только OpenRouter (на этом
+# аккаунте Mistral не отдаёт vision-модели: pixtral отсутствует в списке
+# /v1/models, проверено живым запросом 13.08.2026).
 TEXT_CHAINS = {
     "fast": [
-        "openai/gpt-oss-20b:free",
-        "openrouter/free",
+        "mistral:mistral-small-latest",
+        "openrouter:openai/gpt-oss-20b:free",
+        "openrouter:openrouter/free",
     ],
     "quality": [
-        "openai/gpt-oss-20b:free",
-        "nvidia/nemotron-3-ultra-550b-a55b:free",  # контекст 1M — анализ отзывов
-        "nvidia/nemotron-3-super-120b-a12b:free",
-        "openrouter/free",
+        "mistral:mistral-large-latest",
+        "mistral:mistral-medium-latest",
+        "openrouter:openai/gpt-oss-20b:free",
+        "openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",  # контекст 1M
+        "openrouter:nvidia/nemotron-3-super-120b-a12b:free",
+        "openrouter:openrouter/free",
     ],
 }
 VISION_CHAINS = {
     "fast": [
-        "google/gemma-4-31b-it:free",
-        "nvidia/nemotron-nano-12b-v2-vl:free",
-        "openrouter/free",
+        "openrouter:google/gemma-4-31b-it:free",
+        "openrouter:nvidia/nemotron-nano-12b-v2-vl:free",
+        "openrouter:openrouter/free",
     ],
     "quality": [
-        "google/gemma-4-31b-it:free",  # текст+изображения, function calling [[9]]
-        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-        "nvidia/nemotron-nano-12b-v2-vl:free",
-        "openrouter/free",
+        "openrouter:google/gemma-4-31b-it:free",  # текст+изображения [[9]]
+        "openrouter:nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "openrouter:nvidia/nemotron-nano-12b-v2-vl:free",
+        "openrouter:openrouter/free",
     ],
 }
 
@@ -78,6 +88,7 @@ class LLMGateway:
         self,
         db,
         api_key: str = config.OPENROUTER_API_KEY,
+        mistral_api_key: str = config.MISTRAL_API_KEY,
         profile: str = config.LLM_PROFILE,
         daily_limit: int = config.DAILY_LLM_LIMIT,
         rate_per_minute: int = config.RATE_PER_MINUTE,
@@ -88,16 +99,31 @@ class LLMGateway:
         self._daily_limit = daily_limit
         self._rate = rate_per_minute
         self._timeout = timeout
-        self._provider = (
-            OpenRouterProvider(api_key, config.OPENROUTER_BASE_URL, timeout)
-            if api_key else None
-        )
+        # по одному провайдеру на каждый заданный ключ; роутинг цепочек —
+        # по префиксу модели (mistral:/openrouter:)
+        self._providers: list = []
+        if mistral_api_key:
+            self._providers.append(MistralProvider(mistral_api_key, timeout))
+        if api_key:
+            self._providers.append(OpenRouterProvider(api_key, timeout))
+        # первый доступный — «основной» (для диагностики и тестов)
+        self._provider = self._providers[0] if self._providers else None
         self._mock = MockProvider()
         self._call_times: list[float] = []
 
     @property
     def real(self) -> bool:
         return self._provider is not None
+
+    @property
+    def provider_name(self) -> str:
+        """Имя основного провайдера для диагностики (Mistral/OpenRouter)."""
+        if not self._provider:
+            return "mock"
+        return {
+            "mistral": "Mistral",
+            "openrouter": "OpenRouter",
+        }.get(getattr(self._provider, "name", ""), "LLM")
 
     def set_profile(self, profile: str) -> None:
         """Смена профиля моделей (fast/quality) в рантайме (кнопка /settings)."""
@@ -129,17 +155,21 @@ class LLMGateway:
         # модель цепочки): иначе 4 неудачные попытки из-за 429 апстрима
         # сжигали бы лимит в 4 раза быстрее, чем реальные успешные ответы
         await self._db.budget_increment(day)
-        for model in chain:
+        for raw in chain:
             if time.monotonic() > deadline:
                 logger.warning("Время вызова %s превысило потолок %.0f с — "
                                "фолбэк на mock", kind, config.STRUCTURED_MAX_SECONDS)
                 break
+            provider, model = self._resolve_provider(raw)
+            if provider is None:
+                logger.info("Нет ключа для %s — пропускаю модель", raw)
+                continue
             await self._throttle()
             try:
                 # потолок соблюдается и внутри вызова: остаток бюджета
                 remaining = deadline - time.monotonic()
                 result = await asyncio.wait_for(
-                    self._provider.complete(
+                    provider.complete(
                         model=model, kind=kind, prompt=prompt, schema=schema,
                         images=images),
                     timeout=max(0.0, remaining))
@@ -154,6 +184,21 @@ class LLMGateway:
                                          prompt=prompt, schema=schema,
                                          images=images)
 
+    def _resolve_provider(self, raw: str) -> tuple:
+        """Модель 'mistral:mistral-small-latest' → (MistralProvider, модель).
+
+        Без префикса — основной провайдер (совместимость с тестами, где
+        провайдер подменяется напрямую). Модель провайдера без ключа —
+        (None, None): цепочка пропускает её.
+        """
+        if ":" in raw:
+            prefix, _, model = raw.partition(":")
+            for p in self._providers:
+                if getattr(p, "name", "") == prefix:
+                    return p, model
+            return None, None
+        return self._provider, raw
+
     async def budget_info(self) -> dict:
         day = date.today().isoformat()
         used = await self._db.budget_used(day)
@@ -163,6 +208,7 @@ class LLMGateway:
             "limit": self._daily_limit,
             "remaining": max(0, self._daily_limit - used),
             "real_provider": self.real,
+            "provider": self.provider_name,
             "profile": self._profile,
             "chains": {
                 "text": TEXT_CHAINS[self._profile],
@@ -171,8 +217,8 @@ class LLMGateway:
         }
 
     async def aclose(self) -> None:
-        if self._provider is not None:
-            await self._provider.aclose()
+        for p in self._providers:
+            await p.aclose()
 
     # ── троттлинг: не больше rate вызовов в минуту ────────────────
     async def _throttle(self) -> None:

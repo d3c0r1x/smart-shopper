@@ -181,7 +181,8 @@ async def cmd_diag(message: Message) -> None:
         except Exception as exc:
             lines.append(f"• {adapter.name}: ошибка {exc}")
     info = await llm.budget_info()
-    lines.append(f"• LLM: {'реальный (OpenRouter)' if info['real_provider'] else 'mock (без ключа)'}")
+    prov = info.get("provider", "LLM")
+    lines.append(f"• LLM: {'реальный (' + prov + ')' if info['real_provider'] else 'mock (без ключа)'}")
     lines.append(f"• профиль: {info['profile']}; бюджет: {info['used']}/{info['limit']}")
     await message.answer("\n".join(lines))
 
@@ -646,7 +647,7 @@ async def main() -> None:
 
     logger.info("Умный Шоппер запущен. Демо-режим: %s. LLM: %s. Профиль: %s. "
                 "HTTP-API: http://127.0.0.1:%d",
-                config.DEMO_MODE, "OpenRouter" if llm.real else "mock",
+                config.DEMO_MODE, llm.provider_name,
                 llm._profile, config.API_PORT)
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
