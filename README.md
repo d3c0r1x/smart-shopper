@@ -161,6 +161,17 @@ npm run build      # production-сборка в miniapp/dist
 эндпоинты: `/api/search`, `/api/reviews`, `/api/compare`, `/api/budget` —
 контракт описан в `miniapp/src/api.ts`).
 
+**Развёрнутая версия:** https://d3c0r1x.github.io/smart-shopper/
+(GitHub Pages, ветка `gh-pages` — `index.html` + `assets/` из сборки).
+В Telegram Mini App открывается web_app-кнопкой: кнопка **«🛍 Mini App»**
+в постоянном меню бота и кнопка у поля ввода (`setChatMenuButton`,
+устанавливается автоматически при старте бота). URL настраивается
+переменной `SHOPPER_MINIAPP_URL` (по умолчанию — Pages-URL).
+
+Для подключения к бэкенду задайте при сборке `VITE_API_URL` (ожидаемые
+эндпоинты: `/api/search`, `/api/reviews`, `/api/compare`, `/api/budget` —
+контракт описан в `miniapp/src/api.ts`).
+
 ## HTTP-API для Mini App
 
 Запускается вместе с ботом (один backend, два рендерера):

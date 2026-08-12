@@ -27,6 +27,7 @@ from typing import Awaitable, Callable
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import MenuButtonWebApp, WebAppInfo
 from aiogram import F
 from aiogram.filters import Command, CommandStart
 from aiohttp import web
@@ -623,6 +624,15 @@ async def main() -> None:
     saved_profile = await db.get_setting("profile", config.LLM_PROFILE)
     llm.set_profile(saved_profile)
     await orch._db.cleanup_expired()
+
+    # web_app-кнопка у поля ввода (PRD: «раздаёт кнопку открытия Mini App»)
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="🛍 Умный Шоппер",
+                                         web_app=WebAppInfo(url=config.MINIAPP_URL)))
+        logger.info("Mini App привязан: %s", config.MINIAPP_URL)
+    except Exception as exc:  # без прав на изменение меню — не критично
+        logger.warning("set_chat_menu_button не удался: %s", exc)
 
     # HTTP-API для Mini App (один backend, два рендерера)
     ctx = webmod.ApiContext(db, llm, orch, adapters)

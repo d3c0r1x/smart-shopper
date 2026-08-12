@@ -6,21 +6,30 @@ UX-карта из PRD (раздел 7): «красивые кнопки» = г�
 from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, \
-    KeyboardButton, ReplyKeyboardMarkup
+    KeyboardButton, ReplyKeyboardMarkup, WebAppInfo
 
 from models import Product
 
-MENU = ReplyKeyboardMarkup(
-    keyboard=[
+def _menu() -> ReplyKeyboardMarkup:
+    """Постоянное меню + web_app-кнопка Mini App (PRD: кнопка в клавиатуре)."""
+    import config
+    kb = [
         [KeyboardButton(text="📸 Найти по фото"),
          KeyboardButton(text="🔎 Умный поиск")],
         [KeyboardButton(text="⚖️ Сравнить цены"),
          KeyboardButton(text="⭐ Избранное")],
         [KeyboardButton(text="⚙️ Настройки")],
-    ],
-    resize_keyboard=True,
-    input_field_placeholder="Напишите, что ищете…",
-)
+        [KeyboardButton(text="🛍 Mini App",
+                        web_app=WebAppInfo(url=config.MINIAPP_URL))],
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=kb,
+        resize_keyboard=True,
+        input_field_placeholder="Напишите, что ищете…",
+    )
+
+
+MENU = _menu()
 
 
 def product_card_keyboard(p: Product, *, favored: bool = False) -> InlineKeyboardMarkup:

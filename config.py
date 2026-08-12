@@ -58,6 +58,9 @@ CACHE_REVIEWS_TTL = int(os.getenv("SHOPPER_CACHE_REVIEWS_TTL", "86400"))  # 24 �
 # Порт локального HTTP-сервера; VITE_API_URL в Mini App указывает сюда
 # (через HTTPS-туннель в продакшене).
 API_PORT = int(os.getenv("SHOPPER_API_PORT", "8081"))
+# URL Mini App (HTTPS, обязателен для web_app-кнопки Telegram)
+MINIAPP_URL = os.getenv("SHOPPER_MINIAPP_URL",
+                       "https://d3c0r1x.github.io/smart-shopper/")
 # Если задан — Mini App обязан слать его в заголовке X-API-Token.
 API_TOKEN = os.getenv("SHOPPER_API_TOKEN", "")
 # Разрешить анонимный доступ (user_id из query) при невалидном initData —
