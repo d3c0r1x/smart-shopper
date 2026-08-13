@@ -211,11 +211,274 @@ class OzonBrowserAdapter:
         digits = re.sub(r"\D", "", m.group(1))
         return int(digits) if digits else None
 
+    # ── реальные карточка и отзывы (канал 1: entrypoint JSON в браузере) ──
+
+    async def _fetch_entrypoint(self, page, target_url: str) -> dict:
+        """Вызов entrypoint-api.bx/page/json/v2 изнутри браузера (с cookies).
+
+        Тот же эндпоинт, что вызывает сам сайт: отдаёт widgetStates с
+        характеристиками (webCharacteristics), списком отзывов
+        (webListReviews) и рейтингом (webReviewProductScore).
+        """
+        from urllib.parse import quote
+        ep = ("https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url="
+              + quote(target_url, safe=""))
+        try:
+            res = await page.evaluate(
+                """async (u) => {
+                    const r = await fetch(u, {headers: {'accept': 'application/json'}});
+                    const t = await r.text();
+                    return {status: r.status, body: t};
+                }""", ep)
+            if res["status"] != 200:
+                logger.warning("Ozon entrypoint %s: HTTP %s", target_url[:60],
+                               res["status"])
+                return {}
+            import json
+            return json.loads(res["body"])
+        except Exception as exc:
+            logger.warning("Ozon entrypoint %s не получен: %s",
+                           target_url[:60], exc)
+            return {}
+
+    def _widget(self, data: dict, prefix: str) -> dict:
+        for k, v in data.get("widgetStates", {}).items():
+            if k.startswith(prefix):
+                import json
+                try:
+                    return json.loads(v)
+                except Exception:
+                    return {}
+        return {}
+
     async def get_card(self, ext_id: str) -> Product | None:
+        """Карточка: характеристики (webCharacteristics), цена/фото из DOM,
+        рейтинг и число отзывов (webReviewProductScore)."""
+        from proxy_pool import get_pool
+        pool = self._pool or get_pool()
+        proxies = pool.proxies() if pool is not None else []
+        tried: set[str] = set()
+        for _ in range(min(3, max(len(proxies), 1))):
+            if pool is not None:
+                proxy = pool.next()
+                if proxy in tried:
+                    break
+                tried.add(proxy)
+                self._proxy = proxy
+            card = await self._card_once(ext_id)
+            if card is not None:
+                return card
         return None
 
+    async def _card_once(self, ext_id: str) -> Product | None:
+        ctx, page = await self._new_page()
+        try:
+            url = f"https://www.ozon.ru/product/{ext_id}/"
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            ok = False
+            for _ in range(8):  # до ~40 с на челлендж
+                await asyncio.sleep(5)
+                try:
+                    t = await page.title()
+                except Exception:
+                    t = ""
+                if "ozon" in t.lower() and "antibot" not in t.lower():
+                    ok = True
+                    break
+            if not ok:
+                logger.warning("Ozon-карточка %s: челлендж не решён", ext_id)
+                return None
+            await asyncio.sleep(2)
+            data = await self._fetch_entrypoint(page, url)
+            if not data:
+                return None
+            traits = self._traits_from_entry(data)
+            # цена: первый «N ₽» в DOM (как ищет сам адаптер поиска)
+            price = None
+            try:
+                price_text = await page.eval_on_selector_all(
+                    "body *",
+                    r"""els => els.map(e => (e.textContent||'').trim())
+                               .filter(t => t.length < 25
+                                            && /^[\d\u00a0\u2009 ]{2,}\s*₽/.test(t))
+                               .slice(0, 8)""")
+                for t in price_text:
+                    p = self._parse_price(t)
+                    if p and p > 10:
+                        price = p
+                        break
+            except Exception:
+                pass
+            # фото: первая картинка товара (мультимедиа CDN)
+            photo = ""
+            try:
+                photos = await page.eval_on_selector_all(
+                    "img[src*='multimedia'], img[src*='s3/multimedia']",
+                    "els => els.map(e => e.src).filter(s => s && s.length > 40).slice(0, 3)")
+                if photos:
+                    photo = photos[0]
+            except Exception:
+                pass
+            # заголовок из DOM (h1) или entrypoint seo
+            title = ""
+            try:
+                title = (await page.eval_on_selector(
+                    "h1", "e => (e.textContent||'').trim()")).strip()
+            except Exception:
+                pass
+            if not title:
+                seo = data.get("seo", {})
+                title = (seo.get("title") or "").split(" купить")[0]
+            # рейтинг и число отзывов — со страницы отзывов
+            rating = None
+            reviews_count = 0
+            rev_data = await self._fetch_entrypoint(
+                page, f"https://www.ozon.ru/product/{ext_id}/reviews/")
+            score = self._widget(rev_data, "webReviewProductScore")
+            if score:
+                rating = score.get("totalScore")
+                reviews_count = int(score.get("reviewsCount") or 0)
+            if not title or price is None:
+                logger.warning("Ozon-карточка %s: неполные данные", ext_id)
+                return None
+            return Product(
+                marketplace="ozon", ext_id=ext_id,
+                title=title[:120], price=price,
+                url=f"https://www.ozon.ru/product/{ext_id}/",
+                rating=rating, reviews_count=reviews_count,
+                photo_url=photo, traits=traits,
+            )
+        except Exception as exc:
+            logger.warning("Ozon-карточка %s упала: %s", ext_id, exc)
+            return None
+        finally:
+            await ctx.close()
+
+    @staticmethod
+    def _traits_from_entry(data: dict) -> list[str]:
+        """Характеристики из widgetStates (webCharacteristics / webShortCharacteristics).
+
+        Две структуры: классическая (webCharacteristics: group.short[name,
+        values[].text]) и компактная карточки (webShortCharacteristics:
+        characteristics[title.textRs / values[].text]).
+        """
+        out: list[str] = []
+        for k, v in data.get("widgetStates", {}).items():
+            if not (k.startswith("webCharacteristics")
+                    or k.startswith("webShortCharacteristics")):
+                continue
+            try:
+                import json
+                obj = json.loads(v)
+            except Exception:
+                continue
+            for group in obj.get("characteristics", []) or []:
+                # классический формат: group.short[name, values[].text]
+                short = group.get("short") if isinstance(group, dict) else None
+                if short:
+                    for ch in short:
+                        name = ch.get("name", "")
+                        values = [x.get("text", "") for x in ch.get("values", [])]
+                        if name and values:
+                            out.append(f"{name}: {', '.join(values)}")
+                    continue
+                # компактный формат: title.textRs[].content, values[].text
+                if isinstance(group, dict):
+                    title = group.get("title") or {}
+                    trs = title.get("textRs") if isinstance(title, dict) else None
+                    name = ""
+                    if trs:
+                        name = " ".join(t.get("content", "")
+                                        for t in trs if t.get("content"))
+                    values = [x.get("text", "").rstrip(", ")
+                              for x in group.get("values", []) if x.get("text")]
+                    if name and values:
+                        out.append(f"{name}: {', '.join(values)}")
+        return out
+
     async def get_reviews(self, ext_id: str, limit: int = 20) -> list[Review]:
+        """Отзывы из widgetStates.webListReviews (30 на страницу).
+
+        Дата — Unix-время publishedAt; текст — content.comment, плюсы/минусы
+        — content.positive/negative, оценка — content.score, признак покупки
+        — isItemPurchased.
+        """
+        from proxy_pool import get_pool
+        pool = self._pool or get_pool()
+        proxies = pool.proxies() if pool is not None else []
+        tried: set[str] = set()
+        for _ in range(min(3, max(len(proxies), 1))):
+            if pool is not None:
+                proxy = pool.next()
+                if proxy in tried:
+                    break
+                tried.add(proxy)
+                self._proxy = proxy
+            reviews = await self._reviews_once(ext_id, limit)
+            if reviews:
+                return reviews
         return []
+
+    async def _reviews_once(self, ext_id: str,
+                            limit: int = 20) -> list[Review]:
+        ctx, page = await self._new_page()
+        try:
+            url = f"https://www.ozon.ru/product/{ext_id}/"
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            ok = False
+            for _ in range(8):
+                await asyncio.sleep(5)
+                try:
+                    t = await page.title()
+                except Exception:
+                    t = ""
+                if "ozon" in t.lower() and "antibot" not in t.lower():
+                    ok = True
+                    break
+            if not ok:
+                logger.warning("Ozon-отзывы %s: челлендж не решён", ext_id)
+                return []
+            data = await self._fetch_entrypoint(
+                page, f"https://www.ozon.ru/product/{ext_id}/reviews/")
+            lst = self._widget(data, "webListReviews")
+            raw = lst.get("reviews") or []
+            reviews: list[Review] = []
+            import datetime
+            for r in raw:
+                if len(reviews) >= limit:
+                    break
+                content = r.get("content") or {}
+                text = (content.get("comment") or "").strip()
+                if not text:
+                    continue
+                ts = r.get("publishedAt") or r.get("createdAt")
+                date = ""
+                if ts:
+                    try:
+                        date = datetime.datetime.fromtimestamp(
+                            ts, tz=datetime.timezone.utc
+                        ).strftime("%d.%m.%Y")
+                    except Exception:
+                        date = ""
+                reviews.append(Review(
+                    product_market="ozon", product_id=ext_id,
+                    review_id=str(r.get("uuid") or len(reviews)),
+                    rating=int(content.get("score") or 0),
+                    author=(r.get("author") or {}).get("firstName", ""),
+                    date=date,
+                    text=text[:1500],
+                    pros=(content.get("positive") or "").strip()[:300],
+                    cons=(content.get("negative") or "").strip()[:300],
+                    photos=[p.get("url") or p.get("src") or ""
+                            for p in (content.get("photos") or [])][:3],
+                    bought_here=bool(r.get("isItemPurchased")),
+                ))
+            return reviews
+        except Exception as exc:
+            logger.warning("Ozon-отзывы %s не получены: %s", ext_id, exc)
+            return []
+        finally:
+            await ctx.close()
 
     async def get_photos(self, ext_id: str) -> list[str]:
         return []

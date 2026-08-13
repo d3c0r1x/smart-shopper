@@ -508,6 +508,16 @@ async def _send_outcome(message: Message, outcome: SearchOutcome, label: str) ->
 
 async def _send_card(message: Message, p: Product,
                      analysis: ReviewAnalysis | None = None) -> None:
+    # Поисковая выдача не содержит характеристик и фото — обогащаем карточку
+    # реальными данными (канал 1) при первом показе.
+    if (not config.DEMO_MODE and (not p.photo_url or not p.traits)
+            and p.marketplace in ("ozon", "wb", "yandex")):
+        try:
+            card = await orch._load_card(p)
+            if card is not None:
+                p = card
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Карточка не обогащена: %s", exc)
     state = await db.get_session(message.from_user.id)
     favorites = await db.list_favorites(message.from_user.id)
     favored = any(f.ext_id == p.ext_id and f.marketplace == p.marketplace

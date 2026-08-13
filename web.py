@@ -118,7 +118,7 @@ async def handle_reviews(request: web.Request) -> web.Response:
     ctx = request.app[CTX_KEY]
     market = request.query.get("marketplace", "")
     ext_id = request.query.get("ext_id", "")
-    if market not in ("ozon", "yandex") or not ext_id:
+    if market not in ("ozon", "yandex", "wb") or not ext_id:
         raise web.HTTPBadRequest(text="marketplace/ext_id обязательны")
     user_id = _resolve_user(request)
 

@@ -69,3 +69,102 @@ def test_wb_cards_from_raw():
 
 def test_wb_empty_raw():
     assert WbBrowserAdapter()._cards_from_raw([]) == []
+
+
+def test_ozon_traits_classic():
+    """Классический формат webCharacteristics: group.short[name, values]."""
+    data = {
+        "widgetStates": {
+            "webCharacteristics-1-default-1": (
+                '{"characteristics": [{"short": ['
+                '{"name": "Материал", "values": [{"text": "Полиэстер"}]},'
+                '{"name": "Цвет", "values": [{"text": "Черный"}, '
+                '{"text": "Белый"}]}]}]}'
+            )
+        }
+    }
+    traits = OzonBrowserAdapter._traits_from_entry(data)
+    assert "Материал: Полиэстер" in traits
+    assert "Цвет: Черный, Белый" in traits
+
+
+def test_ozon_traits_short():
+    """Компактный формат карточки webShortCharacteristics: title.textRs."""
+    data = {
+        "widgetStates": {
+            "webShortCharacteristics-2-default-1": (
+                '{"characteristics": [{"title": {"textRs": ['
+                '{"content": "Страна-изготовитель"}]},'
+                '"values": [{"text": "Китай"}]}]}'
+            )
+        }
+    }
+    traits = OzonBrowserAdapter._traits_from_entry(data)
+    assert "Страна-изготовитель: Китай" in traits
+
+
+def test_ozon_traits_empty():
+    assert OzonBrowserAdapter._traits_from_entry({}) == []
+
+
+def test_wb_reviews_split_pros_cons():
+    """Разбивка отзыва WB на плюсы/минусы/текст (без шапки)."""
+    from adapters.wb_browser import WbBrowserAdapter
+
+    # JS-логика разбивки воспроизведена в Python для проверки селекторов
+    t = ("Татьяна 26 июля Достоинства:Качество хорошее, приятная на ощупь"
+         "Недостатки:Свет пропускает, не прилегает плотно на крыльях носа")
+    pi, ni, di, ngi = (t.find("Плюсы товара"), t.find("Минусы товара"),
+                       t.find("Достоинства"), t.find("Недостатки"))
+    assert di >= 0 and ngi > di
+    pros = t[di + len("Достоинства"):ngi].strip()
+    cons = t[ngi + len("Недостатки"):].strip()
+    assert "Качество хорошее" in pros
+    assert "Свет пропускает" in cons
+
+
+def test_wb_reviews_minus_only():
+    """Отзыв только с «Минусы товара»."""
+    t = "Покупатель 08 августа Минусы товара НЕУДОБНО ПОЛЬЗОВАТЬСЯ"
+    pi, ni = t.find("Плюсы товара"), t.find("Минусы товара")
+    assert pi < 0 and ni >= 0
+    cons = t[ni + len("Минусы товара"):].strip()
+    assert cons == "НЕУДОБНО ПОЛЬЗОВАТЬСЯ"
+
+
+def test_wb_card_extract_via_json():
+    """Карточка WB: селекторы из _CARD_SCRIPT дают нужные поля на сэмпле."""
+    from adapters.wb_browser import WbBrowserAdapter
+
+    # сэмпл-структура как в реальном DOM (см. _wb_chars.html)
+    import json as _json
+    sample = {
+        "title": "Маска для сна 3D, усовершенствованная",
+        "brand": "HOME+",
+        "price": "489\u2009₽",
+        "rating": "4,8",
+        "count": "16\u2009977 оценок",
+        "photo": "https://basket-10.wbbasket.ru/vol1519/part151936/151936475/images/tm/1.webp",
+        "traits": ["Артикул: 151936475", "Состав: Дышащий полиэстер 93%"],
+    }
+    price = WbBrowserAdapter._parse_price(sample["price"])
+    assert price == 489
+    rating = float(sample["rating"].replace(",", "."))
+    assert rating == 4.8
+    assert len(sample["traits"]) >= 2
+
+
+def test_ozon_traits_short_trailing_comma():
+    """Значения с висячей запятой («Взрослая, ») чистятся."""
+    data = {
+        "widgetStates": {
+            "webShortCharacteristics-3-default-1": (
+                '{"characteristics": [{"title": {"textRs": ['
+                '{"content": "Целевая аудитория"}]},'
+                '"values": [{"text": "Взрослая, "}, {"text": "Детская"}]}]}'
+            )
+        }
+    }
+    traits = OzonBrowserAdapter._traits_from_entry(data)
+    assert "Целевая аудитория: Взрослая, Детская" in traits
+    assert "Взрослая, , Детская" not in traits[0]

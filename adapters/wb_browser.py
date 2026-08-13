@@ -161,11 +161,219 @@ class WbBrowserAdapter:
         digits = re.sub(r"\D", "", m.group(1))
         return int(digits) if digits else None
 
+    # ── реальные карточка и отзывы (парсинг DOM карточки товара) ──
+
+    _CARD_SCRIPT = r"""
+    () => {
+        const out = {title: '', brand: '', price: '', rating: '',
+                     count: '', photo: '', traits: [], color: ''};
+        const byCls = (sel) => {
+            const el = document.querySelector(sel);
+            return el ? (el.textContent || '').trim().replace(/\s+/g, ' ') : '';
+        };
+        const titleEl = document.querySelector("[class*='productImtName']");
+        out.title = titleEl ? (titleEl.textContent || '').trim() : '';
+        const brandEl = document.querySelector("[class*='productNameBrand']");
+        out.brand = brandEl ? (brandEl.textContent || '').trim() : '';
+        const priceEl = document.querySelector("[class*='productLinePriceWallet'], [class*='price__wallet'], ins[class*='price']");
+        out.price = priceEl ? (priceEl.textContent || '').trim() : '';
+        const ratingEl = document.querySelector("[class*='ratingNumber']");
+        out.rating = ratingEl ? (ratingEl.textContent || '').trim() : '';
+        const countEl = document.querySelector("[class*='reviewCount']");
+        out.count = countEl ? (countEl.textContent || '').trim() : '';
+        const colorEl = document.querySelector("[class*='colorValue']");
+        out.color = colorEl ? (colorEl.textContent || '').trim() : '';
+        const img = document.querySelector("a[class*='productLineImg'] img, [class*='gallery'] img[src*='wbbasket']");
+        out.photo = img ? (img.getAttribute('src') || '') : '';
+        document.querySelectorAll("th[class*='cellKey'], td[class*='cellKey']").forEach(th => {
+            const tr = th.closest('tr');
+            if (!tr) return;
+            const td = tr.querySelector("td[class*='cellValue']");
+            if (!td) return;
+            const k = (th.textContent || '').trim().replace(/\s+/g, ' ');
+            const v = (td.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+            if (k && v && k.length < 40 && k.length > 1) out.traits.push(k + ': ' + v);
+        });
+        return out;
+    }
+    """
+
     async def get_card(self, ext_id: str) -> Product | None:
+        """Карточка: название/бренд/рейтинг/цена/фото/характеристики из DOM."""
+        from proxy_pool import get_pool
+        pool = self._pool or get_pool()
+        proxies = pool.proxies() if pool is not None else []
+        tried: set[str] = set()
+        for _ in range(min(3, max(len(proxies), 1))):
+            if pool is not None:
+                proxy = pool.next()
+                if proxy in tried:
+                    break
+                tried.add(proxy)
+                self._proxy = proxy
+            card = await self._card_once(ext_id)
+            if card is not None:
+                return card
         return None
 
+    async def _card_once(self, ext_id: str) -> Product | None:
+        ctx, page = await self._new_page()
+        try:
+            url = f"https://www.wildberries.ru/catalog/{ext_id}/detail.aspx"
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            for _ in range(6):
+                await asyncio.sleep(2.5)
+                await page.mouse.wheel(0, 1500)
+                if await page.query_selector("[class*='productImtName']"):
+                    break
+            raw = await page.evaluate(self._CARD_SCRIPT)
+            title = (raw.get("title") or "").strip()
+            price = self._parse_price(raw.get("price") or "")
+            if not title or price is None:
+                logger.warning("WB-карточка %s: неполные данные", ext_id)
+                return None
+            rating = None
+            if raw.get("rating"):
+                try:
+                    rating = float((raw["rating"] or "").replace(",", "."))
+                except ValueError:
+                    rating = None
+            reviews_count = 0
+            if raw.get("count"):
+                import re as _re
+                m = _re.search(r"(\d[\d\u00a0 ]*)", raw["count"].replace(" ", ""))
+                if m:
+                    try:
+                        reviews_count = int(_re.sub(r"\D", "", m.group(1)))
+                    except ValueError:
+                        reviews_count = 0
+            brand = raw.get("brand") or ""
+            title_full = f"{brand} {title}".strip()
+            traits = [t for t in raw.get("traits") or [] if t]
+            return Product(
+                marketplace="wb", ext_id=ext_id,
+                title=title_full[:120], price=price,
+                url=url, rating=rating, reviews_count=reviews_count,
+                photo_url=(raw.get("photo") or ""),
+                brand=brand, traits=traits,
+            )
+        except Exception as exc:
+            logger.warning("WB-карточка %s упала: %s", ext_id, exc)
+            return None
+        finally:
+            await ctx.close()
+
+    _REVIEWS_SCRIPT = r"""
+    () => {
+        const out = [];
+        const seen = new Set();
+        document.querySelectorAll("[class*='comment-card']").forEach(card => {
+            const t = (card.innerText || '').trim().replace(/\s+/g, ' ');
+            if (t.length < 30) return;
+            const key = t.slice(0, 60);
+            if (seen.has(key)) return;
+            seen.add(key);
+            let rating = 0;
+            const stars = card.querySelector("[class*='stars-line']");
+            if (stars) {
+                const m = (stars.className || '').match(/star(\d)/);
+                if (m) rating = parseInt(m[1]);
+            }
+            const header = card.querySelector("[class*='comment-card__header']");
+            const head = header ? (header.innerText || '').trim().replace(/\s+/g, ' ') : '';
+            let author = head, date = '';
+            const dm = head.match(/(\d+\s+[а-яёa-z]+)/i);
+            if (dm && dm.index > 0) {
+                author = head.slice(0, dm.index).trim();
+                date = dm[1];
+            } else {
+                // «Покупатель 09 августа» — имя без даты в начале
+                const m2 = head.match(/^(.+?)\s+(\d{1,2}\s+[а-яё]+)/i);
+                if (m2) { author = m2[1]; date = m2[2]; }
+            }
+            let pros = '', cons = '', text = t;
+            // вырезаем шапку (имя + дата) из текста
+            if (head && t.startsWith(head)) text = t.slice(head.length).trim();
+            const pi = text.indexOf('Плюсы товара');
+            const ni = text.indexOf('Минусы товара');
+            const di = text.indexOf('Достоинства');
+            const ngi = text.indexOf('Недостатки');
+            if (pi >= 0 && ni > pi) {
+                pros = text.slice(pi + 'Плюсы товара'.length, ni).trim();
+                cons = text.slice(ni + 'Минусы товара'.length).trim();
+                text = text.slice(0, pi).trim();
+            } else if (pi >= 0) {
+                pros = text.slice(pi + 'Плюсы товара'.length).trim();
+                text = text.slice(0, pi).trim();
+            } else if (ni >= 0) {
+                cons = text.slice(ni + 'Минусы товара'.length).trim();
+                text = text.slice(0, ni).trim();
+            } else if (di >= 0) {
+                pros = text.slice(di + 'Достоинства'.length,
+                                  ngi > di ? ngi : undefined).trim();
+                if (ngi > di) cons = text.slice(ngi + 'Недостатки'.length).trim();
+                text = text.slice(0, di).trim();
+            }
+            out.push({text: text.slice(0, 1500), rating, author,
+                      date, pros: pros.slice(0, 300), cons: cons.slice(0, 300)});
+        });
+        return out.slice(0, LIMIT);
+    }
+    """
+
     async def get_reviews(self, ext_id: str, limit: int = 20) -> list[Review]:
+        """Отзывы: .comment-card (автор/дата в header, рейтинг в stars-line,
+        плюсы/минусы в тексте)."""
+        from proxy_pool import get_pool
+        pool = self._pool or get_pool()
+        proxies = pool.proxies() if pool is not None else []
+        tried: set[str] = set()
+        for _ in range(min(3, max(len(proxies), 1))):
+            if pool is not None:
+                proxy = pool.next()
+                if proxy in tried:
+                    break
+                tried.add(proxy)
+                self._proxy = proxy
+            reviews = await self._reviews_once(ext_id, limit)
+            if reviews:
+                return reviews
         return []
+
+    async def _reviews_once(self, ext_id: str,
+                            limit: int = 20) -> list[Review]:
+        ctx, page = await self._new_page()
+        try:
+            url = f"https://www.wildberries.ru/catalog/{ext_id}/detail.aspx"
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            for _ in range(8):
+                await asyncio.sleep(2)
+                await page.mouse.wheel(0, 3000)
+                n = await page.eval_on_selector_all(
+                    "[class*='comment-card']", "els => els.length")
+                if n > 2:
+                    break
+            await page.wait_for_timeout(1500)
+            raw = await page.evaluate(
+                self._REVIEWS_SCRIPT.replace("LIMIT", str(limit)))
+            reviews: list[Review] = []
+            for i, r in enumerate(raw):
+                reviews.append(Review(
+                    product_market="wb", product_id=ext_id,
+                    review_id=str(i),
+                    rating=int(r.get("rating") or 0),
+                    author=(r.get("author") or "")[:40],
+                    date=(r.get("date") or ""),
+                    text=(r.get("text") or ""),
+                    pros=(r.get("pros") or ""),
+                    cons=(r.get("cons") or ""),
+                ))
+            return reviews
+        except Exception as exc:
+            logger.warning("WB-отзывы %s не получены: %s", ext_id, exc)
+            return []
+        finally:
+            await ctx.close()
 
     async def get_photos(self, ext_id: str) -> list[str]:
         return []

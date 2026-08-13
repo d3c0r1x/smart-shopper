@@ -237,6 +237,33 @@ class Orchestrator:
                                          config.CACHE_REVIEWS_TTL)
         return reviews
 
+    async def _load_card(self, p: Product) -> Product | None:
+        """Обогащает товар данными карточки: характеристики, фото, рейтинг.
+
+        Поисковая выдача отдаёт только название/цену/ссылку; полная карточка
+        (характеристики, фото, рейтинг, число отзывов) — отдельный запрос
+        get_card. Кэшируется на сутки.
+        """
+        cache_key = f"card:{p.marketplace}:{p.ext_id}"
+        cached = await self._db.cache_get_products(cache_key)
+        if cached:
+            return cached[0]
+        adapter = next((a for a in self._adapters if a.name == p.marketplace),
+                       None)
+        if adapter is None or not hasattr(adapter, "get_card"):
+            return None
+        try:
+            card = await adapter.get_card(p.ext_id)
+        except Exception as exc:
+            logger.warning("Карточка %s/%s не получена: %s",
+                           p.marketplace, p.ext_id, exc)
+            return None
+        if card is None:
+            return None
+        await self._db.cache_set_products(cache_key, [card],
+                                          config.CACHE_REVIEWS_TTL)
+        return card
+
     async def _llm_rank(self, products: list[Product],
                         constraints: SearchConstraints) -> list[Product]:
         if not products:
