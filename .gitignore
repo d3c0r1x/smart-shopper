@@ -22,3 +22,6 @@ dist/
 miniapp/node_modules/
 miniapp/dist/
 miniapp/.vite/
+
+# ── Захваченные эндпоинты (могут содержать cookies/заголовки сессии) ──
+captured/

@@ -87,6 +87,22 @@ async def _capture_market(pw, market: str, query: str, proxy: str | None,
         page = await ctx.new_page()
         page.set_default_timeout(30000)
 
+        async def goto_retry(url: str, attempts: int = 3) -> None:
+            """goto с повторными попытками: сеть (Happ/xray TUN) может
+            переключаться посреди загрузки → ERR_NETWORK_CHANGED."""
+            last: Exception | None = None
+            for i in range(1, attempts + 1):
+                try:
+                    await page.goto(url, wait_until="domcontentloaded",
+                                    timeout=30000)
+                    return
+                except Exception as exc:
+                    last = exc
+                    print(f"  попытка {i}/{attempts}: {str(exc)[:90]}")
+                    await asyncio.sleep(3)
+            if last is not None:
+                raise last
+
         hits: dict[str, dict] = {}
         order: list[str] = []
 
@@ -114,16 +130,29 @@ async def _capture_market(pw, market: str, query: str, proxy: str | None,
 
         page.on("response", on_response)
 
-        # 1. главная → бутстрап cookies
-        await page.goto(MARKET_URLS[market], wait_until="domcontentloaded",
-                        timeout=30000)
+        async def log_state(tag: str) -> None:
+            try:
+                print(f"  [{tag}] url={page.url[:70]} title={((await page.title()) or '')[:50]}")
+            except Exception:
+                pass
+
+        # 1. главная → бутстрап cookies (с retry на сетевые сбои)
+        try:
+            await goto_retry(MARKET_URLS[market])
+        except Exception as exc:
+            print(f"Ошибка загрузки главной {MARKET_URLS[market]}: {str(exc)[:90]}")
         await asyncio.sleep(4)
+        await log_state("главная")
 
         # 2. поиск
         search_url = ("https://www.ozon.ru/search/?text=" if market == "ozon"
                       else "https://market.yandex.ru/search?text=") + query.replace(" ", "+")
-        await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            await goto_retry(search_url)
+        except Exception as exc:
+            print(f"Ошибка загрузки поиска: {str(exc)[:90]}")
         await asyncio.sleep(6)
+        await log_state("поиск")
 
         # 3. карточка: кликаем первую ссылку на товар
         card_url = None
@@ -140,8 +169,9 @@ async def _capture_market(pw, market: str, query: str, proxy: str | None,
                 "https://www.ozon.ru" + card_url if market == "ozon"
                 else "https://market.yandex.ru" + card_url)
             try:
-                await page.goto(full, wait_until="domcontentloaded", timeout=30000)
+                await goto_retry(full)
                 await asyncio.sleep(5)
+                await log_state("карточка")
                 # 4. отзывы: прокрутка вниз (пагинация подгружается)
                 for _ in range(4):
                     await page.mouse.wheel(0, 2500)

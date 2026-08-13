@@ -9,6 +9,7 @@ for /f "usebackq tokens=1,* delims==" %%a in ("..\.env") do (
     if "%%a"=="OZON_KEY" set "OZON_API_KEY=%%b"
     if "%%a"=="YANDEX_MARKET_KEY" set "YM_API_KEY=%%b"
     if "%%a"=="MISTRAL_KEY" set "MISTRAL_API_KEY=%%b"
+    if "%%a"=="SHOPPER_PROXY" set "SHOPPER_PROXY=%%b"
 )
 if not defined SHOPPER_BOT_TOKEN (
     echo [ERROR] TG_TOKEN not found in ..\.env
