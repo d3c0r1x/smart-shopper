@@ -52,8 +52,10 @@ class HttpxTransport:
 
         self._client = httpx.AsyncClient(timeout=timeout, proxy=proxy or None)
 
-    async def get(self, url: str, *, params=None, headers=None) -> tuple[int, str]:
-        resp = await self._client.get(url, params=params, headers=headers)
+    async def get(self, url: str, *, params=None, headers=None,
+                  cookies: dict | None = None) -> tuple[int, str]:
+        resp = await self._client.get(url, params=params, headers=headers,
+                                      cookies=cookies or {})
         return resp.status_code, resp.text
 
     async def aclose(self) -> None:
@@ -68,8 +70,10 @@ class CurlCffiTransport:
         self._session = CurlCffiSession(impersonate=impersonate, timeout=timeout,
                                         proxies=proxies)
 
-    async def get(self, url: str, *, params=None, headers=None) -> tuple[int, str]:
+    async def get(self, url: str, *, params=None, headers=None,
+                  cookies: dict | None = None) -> tuple[int, str]:
         resp = await self._session.get(url, params=params, headers=headers,
+                                       cookies=cookies or {},
                                        allow_redirects=False)
         return resp.status_code, resp.text
 
@@ -98,6 +102,7 @@ class BaseAdapter:
         self._max_retries = max_retries or config.MAX_RETRIES
 
     async def _get(self, url: str, *, params=None, extra_headers: dict | None = None,
+                   cookies: dict | None = None,
                    retries: int | None = None) -> tuple[int, str]:
         max_retries = self._max_retries if retries is None else retries
         last_exc: Exception | None = None
@@ -106,7 +111,8 @@ class BaseAdapter:
                 if config.POLITE_DELAY and attempt > 1:
                     await asyncio.sleep(config.POLITE_DELAY)
                 status, text = await self._transport.get(
-                    url, params=params, headers={**self.headers, **(extra_headers or {})}
+                    url, params=params, headers={**self.headers, **(extra_headers or {})},
+                    cookies=cookies or {}
                 )
             except Exception as exc:
                 last_exc = exc
@@ -119,6 +125,24 @@ class BaseAdapter:
                 continue
             return status, text
         raise last_exc if last_exc is not None else RuntimeError("unreachable")
+
+    async def bootstrap_cookies(self, url: str,
+                                extra_headers: dict | None = None) -> bool:
+        """Бутстрап cookie jar: GET главной страницы, как делает браузер.
+
+        Антибот (Ozon, Яндекс) ставит сессионные/регион-куки при первом
+        заходе; сессия транспорта сохраняет их, и последующие запросы к
+        JSON-эндпоинтам идут с тем же набором — процедура из PRD §3.
+        """
+        try:
+            status, _ = await self._transport.get(
+                url, headers={**self.headers, **(extra_headers or {})})
+            # 403-челлендж тоже ставит cookies — jar пополняется
+            return status in (200, 403)
+        except Exception as exc:
+            logger.warning("%s: бутстрап cookies %s не удался: %s",
+                           self.name, url, exc)
+            return False
 
     # ── контракт (обязателен к реализации) ─────────────────────────
     async def search(self, query: str, limit: int = 5) -> list["Product"]:

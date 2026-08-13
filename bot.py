@@ -169,11 +169,14 @@ async def cmd_stats(message: Message) -> None:
 
 @router.message(Command("diag"))
 async def cmd_diag(message: Message) -> None:
+    from adapters.capture import CAPTURED_DIR
     lines = ["🩺 <b>Диагностика</b>\n"]
     if config.DEMO_MODE:
         lines.append("Режим данных: <b>демо</b> (встроенный каталог)")
     else:
         lines.append(f"Режим данных: <b>реальный</b> (прокси: {config.PROXY or 'нет'})")
+    lines.append(f"Канал 1 (JSON-эндпоинты): "
+                 f"{'зафиксированы' if any(CAPTURED_DIR.glob('*.json')) else 'не зафиксированы — tools/capture_endpoints.py'}")
     for adapter in adapters:
         try:
             found = await adapter.search("маска для сна", limit=3)
