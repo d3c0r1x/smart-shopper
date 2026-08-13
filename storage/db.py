@@ -7,7 +7,7 @@ MVP-замена PostgreSQL+Redis из PRD (раздел 4, пункт 9): од�
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
@@ -94,7 +94,7 @@ class Database:
             "INSERT INTO sessions (user_id, state, updated) VALUES (?, ?, ?) "
             "ON CONFLICT(user_id) DO UPDATE SET state = excluded.state, "
             "updated = excluded.updated",
-            (user_id, state.model_dump_json(), datetime.utcnow().isoformat()),
+            (user_id, state.model_dump_json(), datetime.now(timezone.utc).isoformat()),
         )
         await self._conn.commit()
 
@@ -103,14 +103,14 @@ class Database:
         assert self._conn is not None
         cur = await self._conn.execute(
             "SELECT value FROM cache WHERE key = ? AND expires_at > ?",
-            (key, datetime.utcnow().isoformat()),
+            (key, datetime.now(timezone.utc).isoformat()),
         )
         row = await cur.fetchone()
         return row["value"] if row else None
 
     async def cache_set(self, key: str, value: str, ttl_seconds: int) -> None:
         assert self._conn is not None
-        expires = (datetime.utcnow() + timedelta(seconds=ttl_seconds)).isoformat()
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
         await self._conn.execute(
             "INSERT INTO cache (key, value, expires_at) VALUES (?, ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
@@ -150,7 +150,7 @@ class Database:
             "(user_id, marketplace, ext_id, title, price, url, added) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (user_id, p.marketplace, p.ext_id, p.title, p.price, p.url,
-             datetime.utcnow().isoformat()),
+             datetime.now(timezone.utc).isoformat()),
         )
         await self._conn.commit()
         return cur.rowcount > 0
@@ -227,7 +227,7 @@ class Database:
         """Удаляет истёкшие записи кэша; возвращает число удалённых."""
         assert self._conn is not None
         cur = await self._conn.execute(
-            "DELETE FROM cache WHERE expires_at <= ?", (datetime.utcnow().isoformat(),)
+            "DELETE FROM cache WHERE expires_at <= ?", (datetime.now(timezone.utc).isoformat(),)
         )
         await self._conn.commit()
         return cur.rowcount

@@ -23,7 +23,7 @@ rem Текстовые LLM-задачи бесплатно выполняютс�
 rem Ollama не запущена — цепочка честно уходит на Mistral/OpenRouter.
 if not exist "%LOCALAPPDATA%\OllamaPortable\ollama.exe" goto :no_ollama
 set "OLLAMA_MODELS=%LOCALAPPDATA%\Ollama\models"
-tasklist /fi "imagename eq ollama.exe" 2>nul | find /i "ollama.exe" >nul
+tasklist /fi "imagename eq ollama.exe" 2>nul | findstr /i "ollama.exe" >nul
 if %errorlevel%==0 goto :no_ollama
 echo [i] Starting Ollama (local LLM)...
 start "" /b "%LOCALAPPDATA%\OllamaPortable\ollama.exe" serve

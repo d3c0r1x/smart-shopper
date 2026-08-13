@@ -7,6 +7,8 @@ UX-карта из PRD (раздел 7): «красивые кнопки» = г�
 """
 from __future__ import annotations
 
+import hashlib
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, \
     KeyboardButton, ReplyKeyboardMarkup, WebAppInfo
 
@@ -14,6 +16,12 @@ from models import Product
 
 # Единый колбэк главного меню: используется во всех клавиатурах.
 HOME_DATA = "menu:main"
+
+
+def product_ref(p: Product) -> str:
+    """Короткая стабильная ссылка на товар для callback_data Telegram."""
+    raw = f"{p.marketplace}:{p.ext_id}".encode("utf-8")
+    return hashlib.blake2s(raw, digest_size=6).hexdigest()
 
 
 def _menu() -> ReplyKeyboardMarkup:
@@ -60,15 +68,16 @@ def home_keyboard() -> InlineKeyboardMarkup:
 def product_card_keyboard(p: Product, *, favored: bool = False) -> InlineKeyboardMarkup:
     """Кнопки под карточкой товара (PRD, сценарий 1, шаг 5)."""
     fav = "⭐ Убрать" if favored else "⭐ В избранное"
+    ref = product_ref(p)
     kb = [
         [InlineKeyboardButton(text=f"📝 Отзывы ({p.reviews_count})",
-                              callback_data=f"reviews:{p.marketplace}:{p.ext_id}"),
+                              callback_data=f"reviews:{p.marketplace}:{ref}"),
          InlineKeyboardButton(text="⚖️ Ozon vs YM",
-                              callback_data=f"compare:{p.marketplace}:{p.ext_id}")],
+                              callback_data=f"compare:{p.marketplace}:{ref}")],
         [InlineKeyboardButton(text=fav,
-                              callback_data=f"fav:{p.marketplace}:{p.ext_id}"),
+                              callback_data=f"fav:{p.marketplace}:{ref}"),
          InlineKeyboardButton(text="🔁 Ещё похожие",
-                              callback_data=f"more:{p.ext_id}")],
+                              callback_data=f"more:{ref}")],
         [InlineKeyboardButton(text="🛒 Открыть на Ozon", url=p.url)]
         if p.marketplace == "ozon" else
         [InlineKeyboardButton(text="🛒 Открыть на Яндекс Маркете", url=p.url)]

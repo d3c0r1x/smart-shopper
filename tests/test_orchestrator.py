@@ -35,7 +35,7 @@ def test_scenario2_full_flow():
                 SessionState(), progress)
             assert outcome.top, "нет результатов"
             # топ-1 — 3D-маска с пространством для ресниц
-            assert outcome.top[0].ext_id == "msk-001"
+            assert outcome.top[0].ext_id == "msk-001w"
             assert "чёрный" in outcome.constraints.must_have
             analysis = outcome.analyses[outcome.top[0].ext_id]
             by_req = {v.requirement: v for v in analysis.verdicts}

@@ -3,6 +3,8 @@
 Каскад: штрихкод EAN (если есть в карточке) → нормализованное название
 (нечёткое сравнение) → LLM-арбитр «один и тот же товар? да/нет».
 Нечёткое сравнение — RapidFuzz, если установлен, иначе difflib (stdlib).
+Это слой нормализации данных (ТЗ §2): названия приводятся к единому виду
+(регистр, знаки, служебные слова, скобочные уточнения) перед сравнением.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ import re
 from difflib import SequenceMatcher
 
 from llm.gateway import LLMGateway
+from llm.guardrails import sanitize_item
 from llm.prompts import ARBITER_PROMPT
 from llm.schemas import ArbiterVerdict
 from models import CompareResult, Product
@@ -70,11 +73,17 @@ def find_counterpart(target: Product, candidates: list[Product]) -> Product | No
 
 
 async def arbiter_confirm(llm: LLMGateway, a: Product, b: Product) -> ArbiterVerdict:
-    """LLM-арбитр: финальное «да/нет» по паре кандидатов."""
+    """LLM-арбитр: финальное «да/нет» по паре кандидатов.
+
+    Названия идут из внешнего источника и санитизируются перед вставкой
+    в промпт (ТЗ §4 — защита от инъекций).
+    """
     prompt = (
         ARBITER_PROMPT
-        + f"\n\nТОВАР A ({a.marketplace}): {a.title} | EAN: {a.ean or '—'}\n"
-        + f"ТОВАР B ({b.marketplace}): {b.title} | EAN: {b.ean or '—'}"
+        + f"\n\nТОВАР A ({a.marketplace}): "
+          f"{sanitize_item(a.title, 300)} | EAN: {a.ean or '—'}\n"
+        + f"ТОВАР B ({b.marketplace}): "
+          f"{sanitize_item(b.title, 300)} | EAN: {b.ean or '—'}"
     )
     return await llm.structured(kind="arbiter", prompt=prompt, schema=ArbiterVerdict)
 

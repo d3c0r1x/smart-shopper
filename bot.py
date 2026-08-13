@@ -31,13 +31,13 @@ from aiogram.types import MenuButtonWebApp, WebAppInfo
 from aiogram import F
 from aiogram.filters import Command, CommandStart
 from aiohttp import web
-from aiogram.types import (CallbackQuery, InlineKeyboardMarkup, Message)
+from aiogram.types import (CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Message)
 
 import config
 from adapters import build_adapters
 from core.orchestrator import Orchestrator, SearchOutcome
 from keyboards import (HOME_DATA, MENU, compare_keyboard, home_keyboard,
-                       product_card_keyboard, reviews_keyboard,
+                       product_card_keyboard, product_ref, reviews_keyboard,
                        settings_keyboard)
 from llm.gateway import BudgetExceeded, LLMGateway
 from llm.schemas import FreeformReply
@@ -383,7 +383,7 @@ async def cb_review_item(call: CallbackQuery) -> None:
     if r.cons:
         text += f"\n👎 {_html.escape(r.cons, quote=False)}"
     kb = reviews_keyboard(market, ext_id, len(reviews))
-    await call.message.edit_text(text, reply_markup=kb)
+    await _edit_review_message(call.message, text, kb)
 
 
 @router.callback_query(lambda c: c.data.startswith("review_more:"))
@@ -488,8 +488,8 @@ async def _run_search(message: Message, user_text: str) -> None:
 
         outcome = await orch.search_with_constraints(
             user_id, user_text, state, progress_cb, markets=_markets(state))
-        await progress.delete()
         await _send_outcome(message, outcome, f"по запросу «{user_text[:40]}»")
+        await progress.delete()
     except BudgetExceeded:
         info = await llm.budget_info()
         await progress.edit_text(_budget_text(info))
@@ -513,13 +513,14 @@ async def _run_compare(message: Message, text: str) -> None:
             result = await compare_across_all(llm, target, candidates)
             if result is not None:
                 rows.append(result)
-        await progress.delete()
         if not rows:
             await message.answer("⚖️ Тот же товар на другой площадке не найден "
                                  "(проверьте написание или попробуйте другое название).")
+            await progress.delete()
             return
         kb = compare_keyboard(rows[0].ozon_url, rows[0].yandex_url, rows[0].wb_url)
         await message.answer(_compare_text(rows), reply_markup=kb)
+        await progress.delete()
     except BudgetExceeded:
         info = await llm.budget_info()
         await progress.edit_text(_budget_text(info))
@@ -572,19 +573,39 @@ async def _send_card(message: Message, p: Product,
     favored = any(f.ext_id == p.ext_id and f.marketplace == p.marketplace
                   for f in favorites)
     kb = product_card_keyboard(p, favored=favored)
+    card_text = _card_text(p, analysis)
     if config.DEMO_MODE or not p.photo_url:
-        await message.answer(_card_text(p, analysis), reply_markup=kb)
+        await message.answer(card_text, reply_markup=kb)
     else:  # pragma: no cover — реальный режим
-        await message.answer_photo(p.photo_url, caption=_card_text(p, analysis),
-                                   reply_markup=kb)
+        try:
+            await message.answer_photo(p.photo_url, caption=card_text,
+                                       reply_markup=kb)
+        except Exception as exc:
+            # CDN-ссылка может быть недоступна Telegram даже при рабочем браузере.
+            # Текстовая карточка сохраняет весь результат и кнопки.
+            logger.warning("Фото карточки не отправлено, использую текст: %s", exc)
+            await message.answer(card_text, reply_markup=kb)
+
+
+async def _edit_review_message(message: Message, text: str,
+                               reply_markup: InlineKeyboardMarkup) -> None:
+    """Редактирует текстовое или фотосообщение с отзывами.
+
+    Карточка реального товара отправляется как photo с caption. Telegram не
+    позволяет вызвать editMessageText для такого сообщения — нужен caption.
+    """
+    if getattr(message, "photo", None):
+        await message.edit_caption(caption=text, reply_markup=reply_markup)
+    else:
+        await message.edit_text(text, reply_markup=reply_markup)
 
 
 async def _send_analysis(call: CallbackQuery, product: Product,
                          analysis: ReviewAnalysis, reviews) -> None:
     lines = [_card_text(product, analysis)]
-    kb = reviews_keyboard(product.marketplace, product.ext_id, len(reviews))
-    if call.message.photo or call.message.text:
-        await call.message.edit_text("\n".join(lines), reply_markup=kb)
+    kb = reviews_keyboard(product.marketplace, product_ref(product), len(reviews))
+    if call.message:
+        await _edit_review_message(call.message, "\n".join(lines), kb)
 
 
 async def _settings_payload(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
@@ -700,7 +721,10 @@ def _is_refinement(text: str) -> bool:
 async def _find_product(user_id: int, market: str, ext_id: str) -> Product | None:
     state = await db.get_session(user_id)
     for p in state.last_results:
-        if p.marketplace == market and p.ext_id == ext_id:
+        if p.marketplace != market:
+            continue
+        # Поддерживаем и старые callback-ссылки с ext_id, и новые короткие ref.
+        if p.ext_id == ext_id or product_ref(p) == ext_id:
             return p
     return None
 
@@ -709,6 +733,51 @@ async def _analyze(product: Product, reviews, requirements: list[str]) -> Review
     from review.intelligence import analyze_reviews
     return await analyze_reviews(llm, product, reviews, requirements, db=db)
 
+
+
+async def _diag_text() -> str:
+    """Возвращает быструю диагностику без сетевых запросов к маркетплейсам.
+
+    Диагностика не должна запускать полноценный поиск: это дорогая операция,
+    которая открывает браузеры и может вызвать антибот-защиту. Доступность
+    площадок проверяется самим следующим поиском, а этот экран показывает
+    конфигурацию и состояние локальных компонентов.
+    """
+    from adapters.capture import CAPTURED_DIR
+
+    lines = ["🩺 <b>Диагностика</b>", ""]
+    if config.DEMO_MODE:
+        lines.append("Режим данных: <b>демо</b> (встроенный каталог)")
+    else:
+        if config.PROXY_POOL:
+            transport = "пул прокси включён"
+        elif config.PROXY:
+            transport = "прокси настроен"
+        else:
+            transport = "прямое подключение"
+        lines.append(f"Режим данных: <b>реальный</b> ({transport})")
+
+    captured = list(CAPTURED_DIR.glob("*.json")) if CAPTURED_DIR.exists() else []
+    capture_status = "зафиксированы" if captured else "не зафиксированы"
+    lines.append(f"Канал 1 (JSON-эндпоинты): <b>{capture_status}</b>")
+
+    names = {"ozon": "Ozon", "yandex": "Яндекс", "wb": "Wildberries"}
+    for adapter in adapters:
+        name = names.get(getattr(adapter, "name", ""),
+                         getattr(adapter, "name", type(adapter).__name__))
+        lines.append(f"• {name}: адаптер подключён; проверяется при поиске")
+
+    info = await llm.budget_info()
+    provider = info.get("provider", "?")
+    if info.get("local"):
+        lines.append(f"• LLM: {provider} + локальная Ollama")
+    elif info.get("real_provider"):
+        lines.append(f"• LLM: {provider}")
+    else:
+        lines.append("• LLM: mock (без ключа)")
+    lines.append(f"• профиль: {info['profile']}; бюджет: "
+                 f"{info['used']}/{info['limit']}")
+    return "\n".join(lines)
 
 def _budget_info_text(info: dict) -> str:
     """Экран «Бюджет»: остаток на сегодня и активная модель."""
@@ -757,21 +826,18 @@ def _budget_text(info: dict) -> str:
 
 # ────────────────────────────── запуск ────────────────────────────
 
-async def _handle_update_error(event, exception: Exception) -> None:
-    """Обработчик ошибок апдейтов: не даём stale-апдейтам валить бота.
-
-    Типовой случай: пользователь заблокировал бота, а в очереди остался
-    старый апдейт — ответ на него даёт TelegramForbiddenError. Поллинг
-    должен продолжаться, поэтому логируем одной строкой.
-    """
+async def _handle_update_error(event: ErrorEvent) -> None:
+    """Логирует исключение апдейта без вторичного падения error-handler."""
     from aiogram.exceptions import TelegramAPIError
 
+    exception = event.exception
+    update_id = getattr(event.update, "update_id", "?")
     if isinstance(exception, TelegramAPIError):
         logger.warning("Апдейт %s не обработан (%s): %s",
-                       getattr(event, "update_id", "?"),
-                       type(exception).__name__, exception)
-    else:
-        logger.exception("Апдейт %s упал с ошибкой", getattr(event, "update_id", "?"))
+                       update_id, type(exception).__name__, exception)
+        return
+    logger.error("Апдейт %s упал с ошибкой: %s",
+                 update_id, exception, exc_info=exception)
 
 
 async def main() -> None:
@@ -819,6 +885,7 @@ async def main() -> None:
         await runner.cleanup()
         await db.close()
         await llm.aclose()
+        await orch.aclose()
         for a in adapters:
             await a.aclose()
 

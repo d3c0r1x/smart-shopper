@@ -131,6 +131,29 @@ def _seed_reviews() -> None:
             text=text, pros=pros,
         ))
 
+    # Товары с тем же EAN на других площадках делят пул отзывов: в реальности
+    # у одного SKU отзывы одни, какая бы площадка ни показывала карточку.
+    # Это делает демо-каталог согласованным с коллапсом кросс-маркетных
+    # дублей в оркестраторе (дешёвая WB-карточка получает те же отзывы).
+    by_ean: dict[str, list[Review]] = {}
+    for p in OZON + YANDEX + WILD:
+        if p.ean and _REVIEWS.get((p.marketplace, p.ext_id)):
+            by_ean.setdefault(p.ean, []).extend(
+                _REVIEWS[(p.marketplace, p.ext_id)])
+    for p in OZON + YANDEX + WILD:
+        if not p.ean or _REVIEWS.get((p.marketplace, p.ext_id)):
+            continue
+        src = by_ean.get(p.ean)
+        if not src:
+            continue
+        _REVIEWS[(p.marketplace, p.ext_id)] = [
+            Review(product_market=p.marketplace, product_id=p.ext_id,
+                   review_id=f"{p.marketplace}-{p.ext_id}-{i + 1}",
+                   rating=r.rating, author=r.author, date=r.date,
+                   text=r.text, pros=r.pros)
+            for i, r in enumerate(src)
+        ]
+
 
 _seed_reviews()
 

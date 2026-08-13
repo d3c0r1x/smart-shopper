@@ -5,6 +5,7 @@
   GET /api/reviews?marketplace=…&ext_id=…&initData=…
   GET /api/compare?q=…&initData=…
   GET /api/budget
+  GET /api/stats        (uptime, p95 latency, счётчики — метрики ТЗ §5)
   GET /health
 
 Аутентификация:
@@ -15,6 +16,10 @@
      используется user_id из query.
 
 Контракт ответов совпадает с типами в miniapp/src/types.ts.
+
+Метрики (ТЗ §5): каждый запрос замеряется тайминг-мидлварью, p95 latency
+считается по скользящему окну из последних 1000 запросов на путь; /api/stats
+отдаёт uptime, число запросов и p95 по каждому эндпоинту.
 """
 from __future__ import annotations
 
@@ -22,6 +27,8 @@ import hashlib
 import hmac
 import json
 import logging
+import time
+from collections import defaultdict, deque
 from urllib.parse import parse_qsl
 
 from aiohttp import web
@@ -33,13 +40,26 @@ from models import Product, Review
 
 logger = logging.getLogger(__name__)
 
+# ── метрики (ТЗ §5): uptime, счётчики, p95 latency ───────────────
+APP_START = time.monotonic()
+_REQUESTS = {"total": 0}
+_LATENCY: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=1000))
+
+
+def _p95(dq: deque[float]) -> float:
+    if not dq:
+        return 0.0
+    values = sorted(dq)
+    idx = min(len(values) - 1, int(len(values) * 0.95))
+    return values[idx]
+
 
 # ── валидация initData ────────────────────────────────────────────
 
 def parse_init_data(init_data: str, bot_token: str) -> int | None:
     """Возвращает user_id из Telegram initData или None (подпись не сошлась).
 
-    Схема Telegram: data_check_string = строки 'k=v' по алфавиту через \\n;
+    Схема Telegram: data_check_string = строки 'k=v' по алфавиту через \n;
     секрет = HMAC-SHA256(bot_token, "WebAppData"); подпись = hex(HMAC-SHA256).
     """
     if not init_data or not bot_token:
@@ -102,15 +122,19 @@ async def handle_search(request: web.Request) -> web.Response:
     if not q:
         raise web.HTTPBadRequest(text="Параметр q обязателен")
     user_id = _resolve_user(request)
+    t0 = time.monotonic()
     state = await ctx.db.get_session(user_id)
     outcome = await ctx.orch.search_with_constraints(
         user_id, q, state, None,
         markets=_markets(request.query.get("markets", "both")))
+    processing_ms = round((time.monotonic() - t0) * 1000, 1)
     return web.json_response({
         "products": [p.model_dump() for p in outcome.top],
         "constraints": outcome.constraints.model_dump(),
         "verdicts": {ext: [v.model_dump() for v in a.verdicts]
                      for ext, a in outcome.analyses.items()},
+        "processing_ms": processing_ms,
+        "semantic": _semantic_state(ctx),
     })
 
 
@@ -155,8 +179,37 @@ async def handle_budget(request: web.Request) -> web.Response:
     return web.json_response(await ctx.llm.budget_info())
 
 
+def _semantic_state(ctx) -> str:
+    """Статус семантического слоя для /diag и ответов API."""
+    embedder = getattr(getattr(ctx.orch, "_reranker", None), "_embedder", None)
+    if embedder is None:
+        return "off"
+    if not embedder.available:
+        return f"degraded ({embedder.last_error})"
+    return "on"
+
+
+async def handle_stats(request: web.Request) -> web.Response:
+    """Метрики (ТЗ §5): uptime, запросы, p95 latency по эндпоинтам."""
+    ctx = request.app[CTX_KEY]
+    _resolve_user(request)
+    return web.json_response({
+        "uptime_s": round(time.monotonic() - APP_START, 1),
+        "requests": _REQUESTS["total"],
+        "p95_ms": {p: round(_p95(dq), 1) for p, dq in _LATENCY.items()},
+        "samples": {p: len(dq) for p, dq in _LATENCY.items()},
+        "semantic": _semantic_state(ctx),
+        "demo": config.DEMO_MODE,
+    })
+
+
 async def handle_health(request: web.Request) -> web.Response:
-    return web.json_response({"ok": True, "service": "smart-shopper"})
+    return web.json_response({
+        "ok": True,
+        "service": "smart-shopper",
+        "uptime_s": round(time.monotonic() - APP_START, 1),
+        "demo": config.DEMO_MODE,
+    })
 
 
 @web.middleware
@@ -207,6 +260,17 @@ async def _error_middleware(request: web.Request, handler):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@web.middleware
+async def _timing_middleware(request: web.Request, handler):
+    """Замер латентности каждого запроса (метрики ТЗ §5)."""
+    t0 = time.monotonic()
+    try:
+        return await handler(request)
+    finally:
+        _REQUESTS["total"] += 1
+        _LATENCY[request.path].append((time.monotonic() - t0) * 1000.0)
+
+
 class ApiContext:
     """Держит ссылки на общие объекты бота (db, llm, orch, matcher)."""
 
@@ -225,13 +289,15 @@ CTX_KEY = AppKey("ctx", ApiContext)
 
 def create_app(ctx: ApiContext) -> web.Application:
     app = web.Application(
-        middlewares=[_cors_preflight, _auth_middleware, _error_middleware])
+        middlewares=[_cors_preflight, _auth_middleware, _error_middleware,
+                     _timing_middleware])
     app.on_response_prepare.append(_on_prepare_cors)
     app[CTX_KEY] = ctx
     app.router.add_get("/api/search", handle_search)
     app.router.add_get("/api/reviews", handle_reviews)
     app.router.add_get("/api/compare", handle_compare)
     app.router.add_get("/api/budget", handle_budget)
+    app.router.add_get("/api/stats", handle_stats)
     app.router.add_get("/health", handle_health)
     return app
 
@@ -269,6 +335,7 @@ async def _run_standalone() -> None:
         await runner.cleanup()
         await db.close()
         await llm.aclose()
+        await orch.aclose()
 
 
 if __name__ == "__main__":

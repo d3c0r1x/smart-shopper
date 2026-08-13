@@ -209,8 +209,8 @@ def test_refinement_and_reviews_callback(tmp_path):
             await DP.feed_update(bot, _msg_update("маска для сна", 1, 1))
             await DP.feed_update(bot, _msg_update("а подешевле", 2, 2))
             # кликабельные отзывы
-            await DP.feed_update(bot, _cb_update("reviews:ozon:msk-001", 3, 3))
-            await DP.feed_update(bot, _cb_update("review_item:ozon:msk-001:1", 4, 4))
+            await DP.feed_update(bot, _cb_update("reviews:wb:msk-001w", 3, 3))
+            await DP.feed_update(bot, _cb_update("review_item:wb:msk-001w:1", 4, 4))
         finally:
             await botmod.db.close()
 
@@ -231,7 +231,7 @@ def test_favorites_and_compare(tmp_path):
         await botmod.db.connect()
         try:
             await DP.feed_update(bot, _msg_update("маска для сна", 1, 1))
-            await DP.feed_update(bot, _cb_update("fav:ozon:msk-001", 2, 2))
+            await DP.feed_update(bot, _cb_update("fav:wb:msk-001w", 2, 2))
             await DP.feed_update(bot, _msg_update("/favorites", 3, 3))
             await DP.feed_update(bot, _msg_update("/compare маска для сна", 4, 4))
         finally:
@@ -241,7 +241,7 @@ def test_favorites_and_compare(tmp_path):
     joined = "\n".join(_send_texts(session))
     assert "Выгоднее" in joined  # строка сравнения
     assert "Маска для сна 3D" in joined  # карточка из избранного
-    assert any("🛒 Открыть на Ozon" in t for t in _button_texts(session))
+    assert any("🛒 Открыть на Wildberries" in t for t in _button_texts(session))
 
 
 def test_budget_command(tmp_path):

@@ -123,7 +123,7 @@ class YandexBrowserAdapter:
             await ctx.close()
 
     async def _parse_cards(self, page, limit: int) -> list[Product]:
-        script = """
+        script = r"""
         () => {
             const out = [];
             const seen = new Set();
@@ -175,7 +175,7 @@ class YandexBrowserAdapter:
             for _ in range(4):
                 await page.mouse.wheel(0, 2500)
                 await asyncio.sleep(2)
-            script = """
+            script = r"""
             () => {
                 const out = [];
                 document.querySelectorAll('[data-baobab-name*="review"], [class*="review"]').forEach(el => {

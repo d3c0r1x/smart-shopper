@@ -13,6 +13,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import config
+from adapters.robots import RobotsCache
 
 if TYPE_CHECKING:  # pragma: no cover
     from models import Product, Review
@@ -28,6 +29,8 @@ BROWSER_HEADERS = {
 }
 
 _RETRY_STATUSES = {429, *range(500, 600)}
+
+_ROBOTS = RobotsCache()
 
 
 def _backoff(attempt: int, min_delay: float = 0.5) -> float:
@@ -82,6 +85,13 @@ class CurlCffiTransport:
         await closer()
 
 
+def _path_of(url: str) -> str:
+    """Путь из URL для проверки robots.txt (нет пути — '/' разрешён)."""
+    from urllib.parse import urlsplit
+    path = urlsplit(url).path
+    return path or "/"
+
+
 def _make_transport():
     if config.HTTP_CLIENT == "curl_cffi" and HAS_CURL_CFFI:
         proxies = None
@@ -106,6 +116,10 @@ class BaseAdapter:
                    retries: int | None = None) -> tuple[int, str]:
         max_retries = self._max_retries if retries is None else retries
         last_exc: Exception | None = None
+        # этичный парсинг (ТЗ §4): уважаем robots.txt, если сайт его отдаёт
+        if not await _ROBOTS.allows(url, _path_of(url)):
+            logger.info("robots.txt запрещает %s — пропускаю запрос", url)
+            return 0, ""
         for attempt in range(1, max_retries + 1):
             try:
                 if config.POLITE_DELAY and attempt > 1:

@@ -4,6 +4,11 @@
 модель проверяет каждое требование пользователя: confirmed / rejected /
 no_data + 1-2 дословные цитаты. Результат кэшируется (TTL 24 ч — проектное
 значение, PRD раздел 8), повторное открытие отзывов — мгновенное.
+
+Отзывы приходят из внешнего источника (маркетплейс) и перед вставкой в
+промпт проходят санитизацию (llm/guardrails.py, ТЗ §4): control-символы
+вырезаются, длина ограничена — защита и от prompt-инъекций, и от
+перерасхода контекста.
 """
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ import logging
 
 import config
 from llm.gateway import LLMGateway
+from llm.guardrails import sanitize_item
 from llm.prompts import REVIEW_PROMPT
 from models import Product, RequirementVerdict, Review, ReviewAnalysis
 
@@ -20,15 +26,20 @@ logger = logging.getLogger(__name__)
 
 def build_review_prompt(product: Product, reviews: list[Review],
                         requirements: list[str]) -> str:
-    """Собирает промпт: товар + требования + отзывы (каждый с маркером ОТЗЫВ)."""
-    req_block = "\n".join(f"- {r}" for r in requirements) or "(нет требований)"
+    """Собирает промпт: товар + требования + отзывы (каждый с маркером ОТЗЫВ).
+
+    Требования пользователя и тексты отзывов санитизируются перед вставкой.
+    """
+    req_block = "\n".join(f"- {sanitize_item(r, config.PROMPT_MAX_CHARS)}"
+                          for r in requirements) or "(нет требований)"
     reviews_block = "\n".join(
-        f"ОТЗЫВ {i}: [{r.rating}/5] {r.text}"
+        f"ОТЗЫВ {i}: [{r.rating}/5] "
+        f"{sanitize_item(r.text, config.REVIEW_TEXT_MAX_CHARS)}"
         for i, r in enumerate(reviews, 1)
     )
     return (
         REVIEW_PROMPT
-        + f"\n\nТОВАР: {product.title}\n"
+        + f"\n\nТОВАР: {sanitize_item(product.title, 300)}\n"
         + f"ТРЕБОВАНИЯ ПОЛЬЗОВАТЕЛЯ:\n{req_block}\n\n"
         + f"ОТЗЫВЫ:\n{reviews_block}"
     )

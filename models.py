@@ -72,12 +72,20 @@ class ReviewAnalysis(BaseModel):
 
 
 class SearchConstraints(BaseModel):
-    """Ограничения, извлечённые LLM из свободной реплики пользователя."""
+    """Ограничения, извлечённые LLM из свободной реплики пользователя.
+
+    Свободные требования (must_have) извлекает LLM; жёсткие структурные
+    атрибуты (max_price, min_price, brand, min_rating) дополнительно
+    закрывает детерминированный слой search/structfilter.py (ТЗ §2) —
+    он работает всегда, даже без LLM и без бюджета.
+    """
 
     query: str  # поисковый запрос для маркетплейсов
     must_have: list[str] = Field(default_factory=list)  # обязательные требования
     nice_to_have: list[str] = Field(default_factory=list)
     max_price: int | None = None
+    min_price: int | None = None
+    brand: str | None = None
     min_rating: float | None = None
     sort_by: Literal["relevance", "price_asc", "rating"] = "relevance"
 
