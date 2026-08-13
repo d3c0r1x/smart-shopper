@@ -134,7 +134,8 @@ def test_compare_endpoint():
             rows = (await resp.json())["rows"]
             assert rows, "нет строк сравнения"
             assert rows[0]["ozon"] and rows[0]["yandex"]
-            assert rows[0]["cheaper"] in ("ozon", "yandex")
+            # три площадки: дешевле может быть любая (включая WB)
+            assert rows[0]["cheaper"] in ("ozon", "yandex", "wb")
         finally:
             await client.close()
             await ctx.db.close()

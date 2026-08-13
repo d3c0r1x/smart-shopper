@@ -40,7 +40,7 @@ from keyboards import (MENU, compare_keyboard, product_card_keyboard,
                        reviews_keyboard, settings_keyboard)
 from llm.gateway import BudgetExceeded, LLMGateway
 from llm.schemas import FreeformReply
-from matcher.matcher import compare_across_markets, find_counterpart
+from matcher.matcher import compare_across_all, find_counterpart
 import web as webmod
 from middlewares import LoggingMiddleware, ThrottlingMiddleware
 from models import Product, ReviewAnalysis, SessionState
@@ -460,16 +460,10 @@ async def _run_compare(message: Message, text: str) -> None:
             return
         rows = []
         for target in candidates[:3]:
-            for other in ("ozon", "yandex", "wb"):
-                if other == target.marketplace:
-                    continue
-                pool = [p for p in candidates if p.marketplace == other]
-                if not pool:
-                    continue
-                result = await compare_across_markets(llm, target, pool)
-                if result is not None:
-                    rows.append(result)
-                    break  # одна строка на товар (лучший матч на другой площадке)
+            # одна строка на товар со всеми площадками, где нашёлся тот же товар
+            result = await compare_across_all(llm, target, candidates)
+            if result is not None:
+                rows.append(result)
         await progress.delete()
         if not rows:
             await message.answer("⚖️ Тот же товар на другой площадке не найден "

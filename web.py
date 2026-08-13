@@ -139,18 +139,13 @@ async def handle_compare(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text="Параметр q обязателен")
     _resolve_user(request)
     candidates = await ctx.orch.search_candidates(q, _markets(request.query.get("markets", "both")))
+    from matcher.matcher import compare_across_all
     rows = []
     for target in candidates[:3]:
-        for other in ("ozon", "yandex", "wb"):
-            if other == target.marketplace:
-                continue
-            pool = [p for p in candidates if p.marketplace == other]
-            if not pool:
-                continue
-            result = await ctx.matcher(target, pool)
-            if result is not None:
-                rows.append(result.model_dump())
-                break
+        # одна строка на товар: цены со всех площадок, где нашёлся тот же товар
+        result = await compare_across_all(ctx.llm, target, candidates)
+        if result is not None:
+            rows.append(result.model_dump())
     return web.json_response({"rows": rows})
 
 

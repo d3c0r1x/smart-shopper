@@ -118,3 +118,53 @@ async def compare_across_markets(
         logger.info("Арбитр: %r и %r — разные товары", target.title, counterpart.title)
         return None
     return build_compare_result(target, counterpart)
+
+
+async def compare_across_all(
+    llm: LLMGateway,
+    target: Product,
+    candidates: list[Product],
+) -> CompareResult | None:
+    """Сравнивает target с каждой из остальных площадок → одна строка.
+
+    В отличие от compare_across_markets (первый матч), здесь собираются
+    все подтверждённые арбитром пары: строка содержит цены Ozon/Яндекс/WB
+    сразу, где нашлись тот же товар.
+    """
+    fields: dict[str, tuple[int | None, str]] = {
+        "ozon": (None, ""), "yandex": (None, ""), "wb": (None, "")}
+    fields[target.marketplace] = (target.price, target.url)
+    found = False
+    for other in fields:
+        if other == target.marketplace:
+            continue
+        pool = [p for p in candidates if p.marketplace == other]
+        if not pool:
+            continue
+        counterpart = find_counterpart(target, pool)
+        if counterpart is None:
+            continue
+        verdict = await arbiter_confirm(llm, target, counterpart)
+        if not verdict.same:
+            logger.info("Арбитр: %r и %r — разные товары",
+                        target.title, counterpart.title)
+            continue
+        fields[other] = (counterpart.price, counterpart.url)
+        found = True
+    if not found:
+        return None
+    # кто дешевле среди найденных цен
+    prices = {m: v[0] for m, v in fields.items() if v[0]}
+    cheaper: str | None = None
+    diff: int | None = None
+    if len(prices) >= 2 and len(set(prices.values())) > 1:
+        cheaper = min(prices, key=prices.get)
+        values = [v for v in prices.values() if v]
+        diff = round(abs(max(values) - min(values)) / max(values) * 100)
+    return CompareResult(
+        title=target.title,
+        ozon=fields["ozon"][0], yandex=fields["yandex"][0], wb=fields["wb"][0],
+        ozon_url=fields["ozon"][1], yandex_url=fields["yandex"][1],
+        wb_url=fields["wb"][1],
+        cheaper=cheaper, diff_percent=diff,
+    )
