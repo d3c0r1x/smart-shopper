@@ -72,9 +72,11 @@ class OzonBrowserAdapter:
 
     name = "ozon"
 
-    def __init__(self, proxy: str = "", chrome_path: str | None = None,
+    def __init__(self, proxy: str = "", pool=None,
+                 chrome_path: str | None = None,
                  timeout: float = 45.0) -> None:
         self._proxy = proxy
+        self._pool = pool
         self._chrome_path = chrome_path or (
             r"C:\Program Files\Google\Chrome\Application\chrome.exe")
         self._timeout = timeout
@@ -118,21 +120,47 @@ class OzonBrowserAdapter:
         if self._proxy:
             ctx_opts["proxy"] = {"server": self._proxy}
         ctx = await self._browser.new_context(**ctx_opts)
-        await ctx.add_init_script(
-            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+        # ВАЖНО: без init-скрипта navigator.webdriver! Ozon детектирует
+        # подмену свойства и не решает Antibot Challenge (проверено: с
+        # init-скриптом челлендж не решается, без него — за ~5 с).
         page = await ctx.new_page()
         page.set_default_timeout(30000)
         return ctx, page
 
     async def search(self, query: str, limit: int = 5) -> list[Product]:
-        """Ждёт решения Antibot Challenge (до ~80 с), затем парсит выдачу.
+        """Поиск с ротацией прокси: пустой результат (блок IP) → retry.
+
+        Использует пул подписки Happ (proxy_pool): каждый сервер — свой
+        выходной IP; если челлендж не решился на одном — пробуем другой.
+        """
+        from proxy_pool import get_pool
+        pool = self._pool or get_pool()
+        if pool is not None:
+            proxies = pool.proxies()
+            tried: set[str] = set()
+            for _ in range(min(3, max(len(proxies), 1))):
+                proxy = pool.next()
+                if proxy in tried:
+                    break
+                tried.add(proxy)
+                self._proxy = proxy
+                items = await self._search_once(query, limit)
+                if items:
+                    return items
+                logger.info("Ozon: прокси %s вернул пусто — пробую следующий",
+                            proxy)
+            return []
+        return await self._search_once(query, limit)
+
+    async def _search_once(self, query: str, limit: int = 5) -> list[Product]:
+        """Ждёт решения Antibot Challenge (до ~40 с), затем парсит выдачу.
 
         Челлендж решается скриптом страницы за 15–25 с (иногда дольше —
         флапает), надёжный признак готовности — появление ссылок на
         товары a[href*='/product/'], а не title. Ожидание ограничено 40 с,
         чтобы полный поиск по трём площадкам укладывался в лимит
         HTTP-туннеля (~100 с); при несрабатывании челленджа Ozon честно
-        пропускается (фолбэк на демо-каталог).
+        пропускается.
         """
         ctx, page = await self._new_page()
         try:

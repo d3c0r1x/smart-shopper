@@ -25,3 +25,9 @@ miniapp/.vite/
 
 # ── Захваченные эндпоинты (могут содержать cookies/заголовки сессии) ──
 captured/
+
+# ── Секреты подписки Happ и конфиги xray ──
+happ_servers.json
+_sub*.json
+_sub_raw.txt
+_xray_*.json

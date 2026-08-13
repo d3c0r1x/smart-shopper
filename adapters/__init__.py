@@ -33,16 +33,22 @@ def build_adapters(demo: bool | None = None) -> list:
     """Собирает список адаптеров по конфигу (демо-режим или реальный)."""
     demo = config.DEMO_MODE if demo is None else demo
     if demo:
+        # Только явный SHOPPER_DEMO_MODE=1. В реальном режиме демо-каталог
+        # не используется: пустой результат (блок антибота) остаётся пустым.
         return [MockOzonAdapter(), MockYandexAdapter(), MockWbAdapter()]
-    browser_ok = bool(config.PROXY) and _has_playwright()
+    browser_ok = _has_playwright() and (bool(config.PROXY) or config.PROXY_POOL)
     if browser_ok:
         from adapters.ozon_browser import OzonBrowserAdapter
         from adapters.wb_browser import WbBrowserAdapter
         from adapters.yandex_browser import YandexBrowserAdapter
+        from proxy_pool import get_pool
+        # Пул подписки Happ: N выходных IP, ротация при блокировке.
+        pool = get_pool() if config.PROXY_POOL else None
+        proxy = config.PROXY if pool is None else ""
         return [
-            OzonBrowserAdapter(proxy=config.PROXY),
-            YandexBrowserAdapter(proxy=config.PROXY),
-            WbBrowserAdapter(proxy=config.PROXY),
+            OzonBrowserAdapter(proxy=proxy, pool=pool),
+            YandexBrowserAdapter(proxy=proxy, pool=pool),
+            WbBrowserAdapter(proxy=proxy, pool=pool),
         ]
     return [OzonAdapter(), YandexMarketAdapter(region_id=config.YM_REGION)]
 

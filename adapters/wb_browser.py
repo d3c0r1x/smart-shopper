@@ -49,9 +49,11 @@ class WbBrowserAdapter:
 
     name = "wb"
 
-    def __init__(self, proxy: str = "", chrome_path: str | None = None,
+    def __init__(self, proxy: str = "", pool=None,
+                 chrome_path: str | None = None,
                  timeout: float = 40.0) -> None:
         self._proxy = proxy
+        self._pool = pool
         self._chrome_path = chrome_path or (
             r"C:\Program Files\Google\Chrome\Application\chrome.exe")
         self._timeout = timeout
@@ -95,6 +97,27 @@ class WbBrowserAdapter:
         return ctx, page
 
     async def search(self, query: str, limit: int = 5) -> list[Product]:
+        """Поиск с ротацией прокси: пустой результат (блок IP) → retry."""
+        from proxy_pool import get_pool
+        pool = self._pool or get_pool()
+        if pool is not None:
+            proxies = pool.proxies()
+            tried: set[str] = set()
+            for _ in range(min(3, max(len(proxies), 1))):
+                proxy = pool.next()
+                if proxy in tried:
+                    break
+                tried.add(proxy)
+                self._proxy = proxy
+                items = await self._search_once(query, limit)
+                if items:
+                    return items
+                logger.info("WB: прокси %s вернул пусто — пробую следующий",
+                            proxy)
+            return []
+        return await self._search_once(query, limit)
+
+    async def _search_once(self, query: str, limit: int = 5) -> list[Product]:
         ctx, page = await self._new_page()
         try:
             url = SEARCH_URL + query.replace(" ", "+")

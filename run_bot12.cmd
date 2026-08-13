@@ -17,8 +17,10 @@ if not defined SHOPPER_BOT_TOKEN (
     exit /b 1
 )
 
-rem 0 = real marketplace endpoints (needs internet + proxy) | 1 = demo mode (offline)
-set "SHOPPER_DEMO_MODE=1"
+rem 0 = real marketplace endpoints (по умолчанию) | 1 = demo mode (offline)
+rem Демо-каталог в реальном режиме не используется: пустой результат (блок
+rem антибота) остаётся пустым, без подмены на выдуманные товары.
+set "SHOPPER_DEMO_MODE=0"
 rem Без ключа OpenRouter работает mock-провайдер (демо-сценарии на эвристиках).
 rem Чтобы включить реальные LLM-модели, задайте OPENROUTER_API_KEY в .env
 rem и установите SHOPPER_DEMO_MODE=0.

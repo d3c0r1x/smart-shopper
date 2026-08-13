@@ -46,6 +46,13 @@ YM_REGION = int(os.getenv("SHOPPER_YM_REGION", "213"))
 
 HTTP_CLIENT = os.getenv("SHOPPER_HTTP_CLIENT", "curl_cffi")
 PROXY = os.getenv("SHOPPER_PROXY", "")
+# ── Пул прокси подписки Happ ──────────────────────────────────────
+# Подписка = список vless-серверов (у Happ 300+): каждый — отдельный
+# выходной IP. Пул запускает xray-инстансы и ротирует IP при блокировке.
+PROXY_POOL = os.getenv("SHOPPER_PROXY_POOL", "1") == "1"
+POOL_SIZE = int(os.getenv("SHOPPER_POOL_SIZE", "6"))
+# URL подписки (из логов Happ) — в корневом .env, не в репозитории.
+SUBSCRIPTION_URL = os.getenv("SHOPPER_SUBSCRIPTION_URL", "")
 MAX_RETRIES = int(os.getenv("SHOPPER_MAX_RETRIES", "3"))
 # Вежливая пауза между запросами к публичным эндпоинтам (секунды).
 POLITE_DELAY = float(os.getenv("SHOPPER_POLITE_DELAY", "0.4"))
