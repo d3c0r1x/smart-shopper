@@ -31,16 +31,18 @@ from aiogram.types import MenuButtonWebApp, WebAppInfo
 from aiogram import F
 from aiogram.filters import Command, CommandStart
 from aiohttp import web
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (CallbackQuery, InlineKeyboardMarkup, Message)
 
 import config
 from adapters import build_adapters
 from core.orchestrator import Orchestrator, SearchOutcome
-from keyboards import (MENU, compare_keyboard, product_card_keyboard,
-                       reviews_keyboard, settings_keyboard)
+from keyboards import (HOME_DATA, MENU, compare_keyboard, home_keyboard,
+                       product_card_keyboard, reviews_keyboard,
+                       settings_keyboard)
 from llm.gateway import BudgetExceeded, LLMGateway
 from llm.schemas import FreeformReply
-from matcher.matcher import compare_across_all, find_counterpart
+from matcher.matcher import (compare_across_all, compare_across_markets,
+                             find_counterpart)
 import web as webmod
 from middlewares import LoggingMiddleware, ThrottlingMiddleware
 from models import Product, ReviewAnalysis, SessionState
@@ -133,8 +135,12 @@ async def cmd_start(message: Message) -> None:
         "ресниц» — проверю требования по отзывам;\n"
         "• ⚖️ сравнить цены на трёх площадках;\n"
         "• 📝 показать отзывы и ответить на вопросы о товарах.\n\n"
-        "Просто напишите, что ищете, или нажмите кнопку меню.",
+        "Просто напишите, что ищете, или выберите действие в меню.",
         reply_markup=MENU,
+    )
+    await message.answer(
+        "🏠 <b>Главное меню</b> — выберите действие:",
+        reply_markup=home_keyboard(),
     )
 
 
@@ -156,7 +162,8 @@ async def cmd_reset(message: Message) -> None:
 @router.message(Command("budget"))
 async def cmd_budget(message: Message) -> None:
     info = await llm.budget_info()
-    await message.answer(_budget_text(info))
+    await message.answer(_budget_info_text(info),
+                         reply_markup=home_keyboard())
 
 
 @router.message(Command("stats"))
@@ -174,25 +181,7 @@ async def cmd_stats(message: Message) -> None:
 
 @router.message(Command("diag"))
 async def cmd_diag(message: Message) -> None:
-    from adapters.capture import CAPTURED_DIR
-    lines = ["🩺 <b>Диагностика</b>\n"]
-    if config.DEMO_MODE:
-        lines.append("Режим данных: <b>демо</b> (встроенный каталог)")
-    else:
-        lines.append(f"Режим данных: <b>реальный</b> (прокси: {config.PROXY or 'нет'})")
-    lines.append(f"Канал 1 (JSON-эндпоинты): "
-                 f"{'зафиксированы' if any(CAPTURED_DIR.glob('*.json')) else 'не зафиксированы — tools/capture_endpoints.py'}")
-    for adapter in adapters:
-        try:
-            found = await adapter.search("маска для сна", limit=3)
-            lines.append(f"• {adapter.name}: {len(found)} товаров найдено")
-        except Exception as exc:
-            lines.append(f"• {adapter.name}: ошибка {exc}")
-    info = await llm.budget_info()
-    prov = info.get("provider", "LLM")
-    lines.append(f"• LLM: {'реальный (' + prov + ')' if info['real_provider'] else 'mock (без ключа)'}")
-    lines.append(f"• профиль: {info['profile']}; бюджет: {info['used']}/{info['limit']}")
-    await message.answer("\n".join(lines))
+    await message.answer(await _diag_text())
 
 
 @router.message(Command("settings"))
@@ -303,6 +292,52 @@ async def on_photo(message: Message) -> None:
 
 
 # ────────────────────────────── inline-колбэки ────────────────────
+
+@router.callback_query(lambda c: c.data.startswith("menu:"))
+async def cb_menu(call: CallbackQuery) -> None:
+    """Главное inline-меню: навигация по всем экранам бота."""
+    action = call.data.split(":", 1)[1]
+    user_id = call.from_user.id
+    if action == "main":
+        await _answer_home(call)
+        return
+    if action == "search":
+        await _set_mode_from_call(
+            call, "search_wait",
+            "🔎 Опишите товар словами — например: «чёрная маска для сна "
+            "с пространством для ресниц».")
+        return
+    if action == "photo":
+        await _set_mode_from_call(
+            call, "photo_wait",
+            "📸 Отправьте фотографию товара (кнопка 📎 → фотография).")
+        return
+    if action == "compare":
+        await _set_mode_from_call(
+            call, "compare_wait",
+            "⚖️ Что сравнить? Напишите название товара.")
+        return
+    if action == "favorites":
+        await _show_favorites_inline(call, user_id)
+        return
+    if action == "settings":
+        await _show_settings_inline(call)
+        return
+    if action == "budget":
+        info = await llm.budget_info()
+        await _edit_or_answer(call, _budget_info_text(info),
+                              reply_markup=home_keyboard())
+        return
+    if action == "diag":
+        await _edit_or_answer(call, await _diag_text(),
+                              reply_markup=home_keyboard())
+        return
+    if action == "help":
+        await _edit_or_answer(call, _help_text(),
+                              reply_markup=home_keyboard())
+        return
+    await call.answer("Неизвестное действие", show_alert=True)
+
 
 @router.callback_query(lambda c: c.data.startswith("reviews:"))
 async def cb_reviews(call: CallbackQuery) -> None:
@@ -417,14 +452,28 @@ async def cb_set_profile(call: CallbackQuery) -> None:
     llm.set_profile(profile)
     await db.set_setting("profile", profile)
     await call.answer(f"Профиль моделей: {profile}")
-    await _show_settings(call.message)
+    await _show_settings_inline(call)
 
 
 @router.callback_query(lambda c: c.data == "set_clear")
 async def cb_set_clear(call: CallbackQuery) -> None:
     await db.save_session(call.from_user.id, SessionState())
     await call.answer("Контекст очищен")
-    await _show_settings(call.message)
+    await _show_settings_inline(call)
+
+
+@router.callback_query(lambda c: c.data.startswith("set_market:"))
+async def cb_set_market(call: CallbackQuery) -> None:
+    """Выбор площадок для поиска (both | ozon | yandex | wb)."""
+    market = call.data.split(":", 1)[1]
+    if market not in ("both", "ozon", "yandex", "wb"):
+        await call.answer("Неизвестная площадка", show_alert=True)
+        return
+    state = await db.get_session(call.from_user.id)
+    state.default_market = market
+    await db.save_session(call.from_user.id, state)
+    await call.answer(f"Площадки: {market}")
+    await _show_settings_inline(call)
 
 
 # ────────────────────────────── сценарии ──────────────────────────
@@ -538,18 +587,33 @@ async def _send_analysis(call: CallbackQuery, product: Product,
         await call.message.edit_text("\n".join(lines), reply_markup=kb)
 
 
-async def _show_settings(message: Message) -> None:
+async def _settings_payload(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Текст и клавиатура экрана настроек (для сообщений и колбэков)."""
     info = await llm.budget_info()
     profile = await db.get_setting("profile", config.LLM_PROFILE)
+    state = await db.get_session(user_id)
+    market = state.default_market
+    market_names = {"both": "Ozon + Яндекс + WB", "ozon": "только Ozon",
+                    "yandex": "только Яндекс", "wb": "только WB"}
     text = (
         "⚙️ <b>Настройки</b>\n\n"
         f"• Профиль моделей: <b>{info['profile']}</b>\n"
-        f"• Маркетплейсы: оба (Ozon + Яндекс Маркет)\n"
+        f"• Площадки: <b>{market_names.get(market, market)}</b>\n"
         f"• Осталось запросов сегодня: <b>{info['remaining']} из {info['limit']}</b>\n\n"
         "Профиль «быстро» — короткая цепочка моделей, «качественно» — "
         "длинный контекст для анализа отзывов."
     )
-    await message.answer(text, reply_markup=settings_keyboard(profile=profile))
+    return text, settings_keyboard(profile=profile, market=market)
+
+
+async def _show_settings(message: Message) -> None:
+    text, kb = await _settings_payload(message.from_user.id)
+    await message.answer(text, reply_markup=kb)
+
+
+async def _show_settings_inline(call: CallbackQuery) -> None:
+    text, kb = await _settings_payload(call.from_user.id)
+    await _edit_or_answer(call, text, reply_markup=kb)
 
 
 async def _show_favorites(message: Message, user_id: int) -> None:
@@ -563,6 +627,25 @@ async def _show_favorites(message: Message, user_id: int) -> None:
         await message.answer(f"…и ещё {len(favorites) - 5} товаров.")
 
 
+async def _show_favorites_inline(call: CallbackQuery, user_id: int) -> None:
+    """Избранное из главного меню: карточки + кнопка «🏠»."""
+    favorites = await db.list_favorites(user_id)
+    if not favorites:
+        await _edit_or_answer(
+            call, "⭐ Избранное пусто. Нажимайте ⭐ на карточках товаров.",
+            reply_markup=home_keyboard())
+        return
+    await _edit_or_answer(
+        call, f"⭐ <b>Избранное</b>: {len(favorites)} товаров",
+        reply_markup=home_keyboard())
+    for p in favorites[:5]:
+        await _send_card(call.message, p)
+    if len(favorites) > 5:
+        await call.message.answer(
+            f"…и ещё {len(favorites) - 5} товаров.",
+            reply_markup=home_keyboard())
+
+
 # ────────────────────────────── помощники ─────────────────────────
 
 async def _set_mode(message: Message, mode: str, reply: str) -> None:
@@ -570,6 +653,35 @@ async def _set_mode(message: Message, mode: str, reply: str) -> None:
     state.mode = mode
     await db.save_session(message.from_user.id, state)
     await message.answer(reply, reply_markup=MENU)
+
+
+async def _set_mode_from_call(call: CallbackQuery, mode: str, reply: str) -> None:
+    """Вход в режим ожидания ввода из inline-меню."""
+    state = await db.get_session(call.from_user.id)
+    state.mode = mode
+    await db.save_session(call.from_user.id, state)
+    await _edit_or_answer(call, reply, reply_markup=home_keyboard())
+
+
+async def _answer_home(call: CallbackQuery) -> None:
+    """Экран «🏠 Главное меню» (из любого места бота)."""
+    await _edit_or_answer(
+        call, "🏠 <b>Главное меню</b> — выберите действие:",
+        reply_markup=home_keyboard())
+
+
+async def _edit_or_answer(call: CallbackQuery, text: str,
+                          reply_markup: InlineKeyboardMarkup | None = None) -> None:
+    """Правка текущего сообщения; если не вышло — ответ новым."""
+    msg = call.message
+    if msg is None:
+        await call.answer(text, show_alert=True)
+        return
+    try:
+        await msg.edit_text(text, reply_markup=reply_markup,
+                            disable_web_page_preview=True)
+    except Exception:
+        await msg.answer(text, reply_markup=reply_markup)
 
 
 def _markets(state: SessionState) -> list[str] | None:
@@ -596,6 +708,40 @@ async def _find_product(user_id: int, market: str, ext_id: str) -> Product | Non
 async def _analyze(product: Product, reviews, requirements: list[str]) -> ReviewAnalysis:
     from review.intelligence import analyze_reviews
     return await analyze_reviews(llm, product, reviews, requirements, db=db)
+
+
+def _budget_info_text(info: dict) -> str:
+    """Экран «Бюджет»: остаток на сегодня и активная модель."""
+    if info.get("local"):
+        llm_line = "Модель: <b>локальная</b> (Ollama) — бесплатно и без лимита"
+    elif info["real_provider"]:
+        llm_line = f"Модель: облачная ({info.get('provider', 'LLM')})"
+    else:
+        llm_line = "Модель: демо (mock, без ключа)"
+    return (
+        "🔋 <b>Бюджет LLM</b>\n\n"
+        f"• Сегодня использовано: <b>{info['used']} из {info['limit']}</b>\n"
+        f"• Профиль моделей: <b>{info['profile']}</b>\n"
+        f"• {llm_line}\n\n"
+        "Локальная модель (Ollama) бесплатна и не тратит дневной лимит."
+    )
+
+
+def _help_text() -> str:
+    return (
+        "📖 <b>Помощь</b>\n\n"
+        "Я — «Умный Шоппер», ИИ-ассистент покупок на Ozon, Яндекс Маркете "
+        "и Wildberries.\n\n"
+        "🔎 <b>Умный поиск</b> — опишите товар и требования: "
+        "«чёрная маска для сна с пространством для ресниц» — и я проверю "
+        "требования по отзывам.\n"
+        "📸 <b>По фото</b> — отправьте фотографию товара, я найду похожие.\n"
+        "⚖️ <b>Сравнение цен</b> — сравню тот же товар на трёх площадках.\n"
+        "⭐ <b>Избранное</b> — сохранённые карточки.\n"
+        "⚙️ <b>Настройки</b> — профиль моделей и выбор площадок.\n\n"
+        "На карточках товара есть кнопки: отзывы, сравнение, избранное, "
+        "похожие и «🏠 Главное меню»."
+    )
 
 
 def _budget_text(info: dict) -> str:
@@ -637,6 +783,7 @@ async def main() -> None:
     dp.errors.register(_handle_update_error)
     dp.message.middleware(ThrottlingMiddleware())
     dp.message.middleware(LoggingMiddleware())
+    dp.callback_query.middleware(ThrottlingMiddleware())
 
     await db.connect()
     saved_profile = await db.get_setting("profile", config.LLM_PROFILE)

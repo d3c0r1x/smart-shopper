@@ -84,3 +84,12 @@ DEFAULT_MARKETPLACE = os.getenv("SHOPPER_DEFAULT_MARKETPLACE", "both")  # both|o
 # Сколько кандидатов отбирается на каждом этапе (PRD, раздел 6)
 CANDIDATES_PER_MARKET = int(os.getenv("SHOPPER_CANDIDATES_PER_MARKET", "10"))
 REVIEWS_PER_PRODUCT = int(os.getenv("SHOPPER_REVIEWS_PER_PRODUCT", "40"))
+
+# ── Локальная LLM (Ollama на GPU) ─────────────────────────────
+# Текстовые задачи (constraints/rank/arbiter/review/freeform) можно
+# выполнять локально: бесплатно, без дневного лимита и приватно.
+# Если Ollama недоступна — цепочка честно уходит на облако.
+LOCAL_LLM = os.getenv("SHOPPER_LOCAL_LLM", "1") == "1"
+LOCAL_BASE_URL = os.getenv("SHOPPER_LOCAL_BASE_URL", "http://127.0.0.1:11434/v1")
+LOCAL_MODEL = os.getenv("SHOPPER_LOCAL_MODEL", "qwen2.5:3b-instruct-q4_K_M")
+LOCAL_TIMEOUT = float(os.getenv("SHOPPER_LOCAL_TIMEOUT", "30"))

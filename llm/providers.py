@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import logging
 import re
 from typing import Type
@@ -36,12 +37,12 @@ class OpenAICompatProvider:
     """
 
     def __init__(self, api_key: str, base_url: str, timeout: float,
-                 name: str) -> None:
+                 name: str, max_retries: int = 2) -> None:
         from openai import AsyncOpenAI
 
         self.name = name
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url,
-                                   timeout=timeout)
+                                   timeout=timeout, max_retries=max_retries)
         self._timeout = timeout
 
     async def complete(self, *, model: str, kind: str, prompt: str,
@@ -114,6 +115,153 @@ class OpenRouterProvider(OpenAICompatProvider):
 
         super().__init__(api_key, OPENROUTER_BASE_URL, timeout,
                          name="openrouter")
+
+
+class LocalProvider:
+    """Локальная модель через Ollama (нативный /api/chat).
+
+    OpenAI-совместимый слой Ollama не поддерживает strict json_schema
+    (503), а json_object требует слова «json» в промпте — поэтому
+    ходим в нативный API: для простых схем (без $defs и «number»)
+    шлём format-грамматику JSON Schema (модель вынуждена отвечать
+    валидным JSON точно по схеме), для сложных — format="json".
+    При 503 (модель ещё грузится в VRAM) — ретраи с паузой.
+
+    Работает на GPU/CPU устройства (у нас — GTX 1650 4GB):
+    qwen2.5:3b-instruct-q4_K_M — файл 1.9 GB (источник:
+    ollama.com/library/qwen2.5/tags), в 4 GB VRAM влезает с запасом.
+    Бесплатно и без дневного лимита; при недоступности сервиса
+    gateway честно уходит на облачную цепочку.
+    """
+
+    name = "local"
+
+    def __init__(self, base_url: str, timeout: float) -> None:
+        import httpx
+
+        self._base_url = base_url.rstrip("/").replace("/v1", "") + "/api/chat"
+        self._timeout = timeout
+        # trust_env=False: httpx 0.28 подхватывает системный прокси
+        # (HTTP(S)_PROXY), который глушит localhost-запросы к Ollama
+        self._client = httpx.AsyncClient(timeout=timeout, trust_env=False)
+
+    async def complete(self, *, model: str, kind: str, prompt: str,
+                       schema: Type[BaseModel],
+                       images: list[str] | None = None) -> BaseModel:
+        if images:
+            raise ProviderError("локальная модель текстовая — vision недоступна")
+        schema_json = schema.model_json_schema()
+        # грамматика JSON Schema заставляет модель отвечать ТОЧНО по схеме
+        # (маленькая 3B-модель иначе выдумывает ключи). Схему санитируем:
+        # $defs инлайним, number-поля выбрасываем. Если обязательное поле
+        # выбросить нельзя — просим просто валидный JSON (формат «json»).
+        formats: list = ["json"]
+        grammar = _ollama_grammar_schema(schema_json)
+        if grammar is not None:
+            formats.insert(0, grammar)
+        last_error: Exception | None = None
+        start = time.monotonic()
+        for attempt in range(4):
+            if time.monotonic() - start > self._timeout:
+                break
+            for fmt in formats:
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "temperature": 0.1,
+                    "options": {"num_predict": 1600},
+                    # модель остаётся в VRAM (иначе после 5 минут простоя
+                    # каждая первая задача платит холодной загрузкой)
+                    "keep_alive": -1,
+                    "format": fmt,
+                }
+                try:
+                    resp = await self._client.post(self._base_url, json=payload)
+                except Exception as exc:
+                    last_error = exc
+                    await asyncio.sleep(1.0)
+                    continue
+                if resp.status_code == 503:
+                    # модель грузится в VRAM — ждём и пробуем снова
+                    last_error = ProviderError("модель грузится (503)")
+                    await asyncio.sleep(2.0)
+                    break
+                if resp.status_code != 200:
+                    last_error = ProviderError(
+                        f"HTTP {resp.status_code}: {resp.text[:120]}")
+                    continue
+                try:
+                    raw = resp.json()["message"]["content"]
+                    return schema.model_validate(_extract_json(raw))
+                except Exception as exc:
+                    raise ProviderError(f"ответ модели невалиден: {exc}") from exc
+        raise ProviderError(f"Ollama недоступна ({last_error})")
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
+def _ollama_grammar_schema(schema: dict, defs: dict | None = None) -> dict | None:
+    """JSON Schema для грамматики Ollama (нативный /api/chat, format=schema).
+
+    $defs инлайнятся через $ref, поля типа «number» выбрасываются
+    (грамматика Ollama их не поддерживает). Если выбрасывается ОБЯЗАТЕЛЬНОЕ
+    поле — возвращаем None: вызывающий переходит на формат «json».
+    Пропущенные optional-поля модель не выводит, pydantic подставит дефолты.
+    """
+    defs = defs if defs is not None else schema.get("$defs", {})
+    props: dict = {}
+    for name, prop in (schema.get("properties") or {}).items():
+        clean = _clean_grammar_prop(prop, defs)
+        if clean is not None:
+            props[name] = clean
+    if not props:
+        return None
+    # если какое-то ОБЯЗАТЕЛЬНОЕ по схеме поле не влезло в грамматику
+    # (например, number) — модель не сможет его вывести, не рискуем
+    missing = [n for n in (schema.get("required") or []) if n not in props]
+    if missing:
+        return None
+    # требуем ВСЕ безопасные поля: маленькая модель иначе опускает
+    # optional-ключи (например, verdicts) и ответ формально валиден,
+    # но бесполезен. Пустые массивы/строки при этом допустимы.
+    out: dict = {"type": "object", "properties": props,
+                 "additionalProperties": False,
+                 "required": list(props)}
+    return out
+
+
+def _clean_grammar_prop(prop, defs: dict):
+    """Очищает свойство схемы до грамматико-безопасного вида (или None)."""
+    if not isinstance(prop, dict):
+        return prop
+    if "$ref" in prop:
+        ref = defs.get(prop["$ref"].rsplit("/", 1)[-1])
+        return None if ref is None else _clean_grammar_prop(ref, defs)
+    t = prop.get("type")
+    if t == "number" or (isinstance(t, list) and "number" in t):
+        return None
+    if "anyOf" in prop:
+        variants = [v for v in prop["anyOf"] if isinstance(v, dict)]
+        types = [v.get("type") for v in variants]
+        if "number" in types:
+            return None
+        if any(tp not in ("integer", "string", "boolean", "null")
+               for tp in types):
+            return None
+        return prop
+    if t == "array":
+        items = _clean_grammar_prop(prop.get("items", {}), defs)
+        if items is None:
+            return None
+        return {**prop, "items": items}
+    if t == "object":
+        return _ollama_grammar_schema(prop, defs)
+    if t in ("string", "integer", "boolean"):
+        return prop
+    return None
+
 
 
 def _json_schema(schema: Type[BaseModel]) -> dict:

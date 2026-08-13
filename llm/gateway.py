@@ -20,7 +20,7 @@ from typing import Type
 from pydantic import BaseModel
 
 import config
-from llm.providers import (MistralProvider, MockProvider,
+from llm.providers import (LocalProvider, MistralProvider, MockProvider,
                            OpenRouterProvider, ProviderError)
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,13 @@ VISION_CHAINS = {
 
 TEXT_KINDS = {"constraints", "review", "rank", "arbiter", "freeform"}
 
+# Локальная модель (Ollama, qwen2.5:3b) — только механические задачи,
+# где ошибка малозаметна и фолбэк на облако дешёв: ранжирование кандидатов,
+# вердикт арбитра «тот же товар?», свободный ответ. Query-извлечение
+# (constraints) и анализ отзывов (review) — на облаке: там даже редкая
+# ошибка видна пользователю (неверный запрос = неверные товары).
+LOCAL_KINDS = {"rank", "arbiter", "freeform"}
+
 
 class BudgetExceeded(Exception):
     """Дневной лимит бесплатных LLM-запросов исчерпан."""
@@ -93,6 +100,7 @@ class LLMGateway:
         daily_limit: int = config.DAILY_LLM_LIMIT,
         rate_per_minute: int = config.RATE_PER_MINUTE,
         timeout: float = config.LLM_TIMEOUT_SECONDS,
+        local_llm: bool = config.LOCAL_LLM,
     ) -> None:
         self._db = db
         self._profile = profile if profile in TEXT_CHAINS else "quality"
@@ -110,20 +118,29 @@ class LLMGateway:
         self._provider = self._providers[0] if self._providers else None
         self._mock = MockProvider()
         self._call_times: list[float] = []
+        # локальная модель (Ollama) — бесплатная и безлимитная;
+        # пробуется первой для текстовых задач, при недоступности
+        # цепочка уходит на облако (Mistral/OpenRouter)
+        self._local: LocalProvider | None = None
+        if local_llm:
+            self._local = LocalProvider(config.LOCAL_BASE_URL,
+                                        config.LOCAL_TIMEOUT)
 
     @property
     def real(self) -> bool:
-        return self._provider is not None
+        return self._provider is not None or self._local is not None
 
     @property
     def provider_name(self) -> str:
-        """Имя основного провайдера для диагностики (Mistral/OpenRouter)."""
-        if not self._provider:
-            return "mock"
-        return {
-            "mistral": "Mistral",
-            "openrouter": "OpenRouter",
-        }.get(getattr(self._provider, "name", ""), "LLM")
+        """Имя основного провайдера для диагностики."""
+        if self._provider:
+            return {
+                "mistral": "Mistral",
+                "openrouter": "OpenRouter",
+            }.get(getattr(self._provider, "name", ""), "LLM")
+        if self._local is not None:
+            return "Локально (Ollama)"
+        return "mock"
 
     def set_profile(self, profile: str) -> None:
         """Смена профиля моделей (fast/quality) в рантайме (кнопка /settings)."""
@@ -138,10 +155,22 @@ class LLMGateway:
         """Один структурный вызов: вернёт валидный schema-объект."""
         if kind not in TEXT_KINDS | {"vision"}:
             raise ValueError(f"неизвестный kind: {kind}")
-        if self._provider is None:
+        if self._provider is None and self._local is None:
             return await self._mock.complete(model="mock", kind=kind,
                                              prompt=prompt, schema=schema,
                                              images=images)
+        # локальная модель — бесплатная и безлимитная: пробуем первой
+        # только для механических задач (см. LOCAL_KINDS)
+        if self._local is not None and kind in LOCAL_KINDS:
+            try:
+                return await asyncio.wait_for(
+                    self._local.complete(model=config.LOCAL_MODEL, kind=kind,
+                                         prompt=prompt, schema=schema,
+                                         images=images),
+                    timeout=config.LOCAL_TIMEOUT)
+            except Exception as exc:
+                logger.warning("Локальная модель недоступна (%s) — "
+                               "пробую облачную цепочку", exc)
 
         day = date.today().isoformat()
         if await self._db.budget_used(day) >= self._daily_limit:
@@ -193,6 +222,8 @@ class LLMGateway:
         """
         if ":" in raw:
             prefix, _, model = raw.partition(":")
+            if prefix == "local":
+                return self._local, model
             for p in self._providers:
                 if getattr(p, "name", "") == prefix:
                     return p, model
@@ -209,6 +240,7 @@ class LLMGateway:
             "remaining": max(0, self._daily_limit - used),
             "real_provider": self.real,
             "provider": self.provider_name,
+            "local": self._local is not None,
             "profile": self._profile,
             "chains": {
                 "text": TEXT_CHAINS[self._profile],
@@ -219,6 +251,8 @@ class LLMGateway:
     async def aclose(self) -> None:
         for p in self._providers:
             await p.aclose()
+        if self._local is not None:
+            await self._local.aclose()
 
     # ── троттлинг: не больше rate вызовов в минуту ────────────────
     async def _throttle(self) -> None:

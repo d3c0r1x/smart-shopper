@@ -145,6 +145,34 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_inline_menu_navigation(tmp_path):
+    """Главное inline-меню: menu:search → ввод → карточки с «🏠»;
+    настройки → выбор площадок set_market:wb."""
+    session = CapturingSession()
+    bot = _make_bot(session)
+
+    async def run():
+        db_path = str(tmp_path / "flow_inline.db")
+        _reset(db_path)
+        await botmod.db.connect()
+        try:
+            await DP.feed_update(bot, _msg_update("/start", 1, 1))
+            await DP.feed_update(bot, _cb_update("menu:search", 2, 2))
+            await DP.feed_update(bot, _msg_update("маска для сна", 3, 3))
+            await DP.feed_update(bot, _cb_update("menu:settings", 4, 4))
+            await DP.feed_update(bot, _cb_update("set_market:wb", 5, 5))
+        finally:
+            await botmod.db.close()
+
+    _run(run())
+    texts = "\n".join(_send_texts(session) + _edit_texts(session))
+    buttons = _button_texts(session)
+    assert "🏠 <b>Главное меню</b>" in texts  # стартовое inline-меню
+    assert "🏠 Главное меню" in buttons        # «🏠» на карточках
+    assert "Маска для сна 3D чёрная" in texts  # поиск из меню работает
+    assert "только WB" in texts               # выбор площадки применился
+
+
 def test_start_and_smart_search(tmp_path):
     session = CapturingSession()
     bot = _make_bot(session)

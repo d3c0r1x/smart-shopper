@@ -312,6 +312,34 @@ curl "http://127.0.0.1:8081/api/compare?q=маска%20для%20сна&user_id=1
 без response_format, а валидация pydantic-схемы отбракует кривой ответ и
 переключит цепочку дальше.
 
+## Локальная LLM (Ollama)
+
+Через Ollama локально выполняются механические LLM-задачи: ранжирование
+кандидатов, вердикт арбитра «тот же товар?» при сравнении цен и
+свободные ответы — бесплатно, без дневного лимита и приватно.
+Query-извлечение (constraints) и анализ отзывов (review) остаются на
+облаке: там даже редкая ошибка видна пользователю (неверный запрос =
+неверные товары), поэтому качество этих задач не снижается.
+Локальная модель пробуется первой для своих задач; если сервис
+недоступен или ответ не проходит валидацию — цепочка честно уходит на
+Mistral/OpenRouter.
+
+Установка (Windows, без прав администратора):
+
+```powershell
+curl -fsSL -o "$env:LOCALAPPDATA\OllamaSetup.exe" https://ollama.com/download/OllamaSetup.exe
+& "$env:LOCALAPPDATA\OllamaSetup.exe" /SILENT
+ollama pull qwen2.5:3b-instruct-q4_K_M
+```
+
+Модель `qwen2.5:3b-instruct-q4_K_M` — файл 1.9 GB (источник:
+[ollama.com/library/qwen2.5/tags](https://ollama.com/library/qwen2.5/tags)),
+работает на GPU от 4 GB VRAM. Vision остаётся облачной: локальная
+vision-модель в 4 GB VRAM не помещается с запасом.
+
+Отключить: `SHOPPER_LOCAL_LLM=0`. Переменные: `SHOPPER_LOCAL_BASE_URL`,
+`SHOPPER_LOCAL_MODEL`, `SHOPPER_LOCAL_TIMEOUT`.
+
 ## Запуск
 
 ```bash
