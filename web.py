@@ -76,7 +76,7 @@ def _resolve_user(request: web.Request) -> int:
 
 
 def _markets(raw: str) -> list[str] | None:
-    chosen = [m for m in raw.split(",") if m in ("ozon", "yandex")]
+    chosen = [m for m in raw.split(",") if m in ("ozon", "yandex", "wb")]
     return chosen or None
 
 
@@ -139,13 +139,18 @@ async def handle_compare(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text="Параметр q обязателен")
     _resolve_user(request)
     candidates = await ctx.orch.search_candidates(q, _markets(request.query.get("markets", "both")))
-    ozon_items = [p for p in candidates if p.marketplace == "ozon"]
-    yandex_items = [p for p in candidates if p.marketplace == "yandex"]
     rows = []
-    for target in ozon_items[:3]:
-        result = await ctx.matcher(target, yandex_items)
-        if result is not None:
-            rows.append(result.model_dump())
+    for target in candidates[:3]:
+        for other in ("ozon", "yandex", "wb"):
+            if other == target.marketplace:
+                continue
+            pool = [p for p in candidates if p.marketplace == other]
+            if not pool:
+                continue
+            result = await ctx.matcher(target, pool)
+            if result is not None:
+                rows.append(result.model_dump())
+                break
     return web.json_response({"rows": rows})
 
 

@@ -75,12 +75,17 @@ def reviews_keyboard(market: str, ext_id: str, count: int,
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-def compare_keyboard(ozon_url: str, yandex_url: str) -> InlineKeyboardMarkup:
-    kb = [
-        [InlineKeyboardButton(text="🛒 Открыть на Ozon", url=ozon_url),
-         InlineKeyboardButton(text="🛒 Открыть на Яндекс Маркете", url=yandex_url)],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=kb)
+def compare_keyboard(ozon_url: str = "", yandex_url: str = "",
+                      wb_url: str = "") -> InlineKeyboardMarkup:
+    """Кнопки-ссылки на карточки площадок, участвующих в сравнении."""
+    row = []
+    if ozon_url:
+        row.append(InlineKeyboardButton(text="🛒 Ozon", url=ozon_url))
+    if yandex_url:
+        row.append(InlineKeyboardButton(text="🛒 Яндекс", url=yandex_url))
+    if wb_url:
+        row.append(InlineKeyboardButton(text="🛒 WB", url=wb_url))
+    return InlineKeyboardMarkup(inline_keyboard=[row] if row else [])
 
 
 def settings_keyboard(*, profile: str) -> InlineKeyboardMarkup:

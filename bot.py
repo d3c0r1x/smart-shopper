@@ -75,7 +75,8 @@ def _rub(price: int | None) -> str:
 
 
 def _card_text(p: Product, analysis: ReviewAnalysis | None = None) -> str:
-    market = "🟢 Ozon" if p.marketplace == "ozon" else "🔵 Яндекс Маркет"
+    market = {"ozon": "🟢 Ozon", "yandex": "🔵 Яндекс Маркет",
+              "wb": "🟣 Wildberries"}.get(p.marketplace, p.marketplace)
     head = f"{market} · ⭐ {p.rating or '—'} ({p.reviews_count} отзывов)"
     title = f"<b>{_html.escape(p.title, quote=False)}</b>"
     price = _rub(p.price)
@@ -103,13 +104,17 @@ def _verdicts_line(a: ReviewAnalysis) -> str:
     return f"Ваш запрос: {' · '.join(parts)}"
 
 
+_MARKET_NAMES = {"ozon": "Ozon", "yandex": "Яндекс Маркете", "wb": "Wildberries"}
+
+
 def _compare_text(rows) -> str:
-    lines = ["⚖️ <b>Сравнение цен Ozon vs Яндекс Маркет</b>\n"]
+    lines = ["⚖️ <b>Сравнение цен: Ozon · Яндекс · Wildberries</b>\n"]
     for r in rows:
         line = f"<b>{_html.escape(r.title[:60], quote=False)}</b>\n"
         line += f"🟢 Ozon: {_rub(r.ozon)}\n🔵 Яндекс: {_rub(r.yandex)}\n"
+        line += f"🟣 Wildberries: {_rub(r.wb)}\n"
         if r.cheaper and r.diff_percent:
-            name = "Ozon" if r.cheaper == "ozon" else "Яндекс Маркете"
+            name = _MARKET_NAMES.get(r.cheaper, r.cheaper)
             line += f"🏆 Выгоднее на {name} на {r.diff_percent}%"
         lines.append(line)
     return "\n\n".join(lines)
@@ -121,12 +126,12 @@ def _compare_text(rows) -> str:
 async def cmd_start(message: Message) -> None:
     await message.answer(
         "Привет! Я <b>«Умный Шоппер»</b> — ИИ-ассистент покупок на "
-        "<b>Ozon</b> и <b>Яндекс Маркете</b>.\n\n"
+        "<b>Ozon</b>, <b>Яндекс Маркете</b> и <b>Wildberries</b>.\n\n"
         "Могу:\n"
         "• 📸 найти товар по фотографии;\n"
         "• 🔎 найти по описанию: «чёрная маска для сна с пространством для "
         "ресниц» — проверю требования по отзывам;\n"
-        "• ⚖️ сравнить цены на одной площадке и другой;\n"
+        "• ⚖️ сравнить цены на трёх площадках;\n"
         "• 📝 показать отзывы и ответить на вопросы о товарах.\n\n"
         "Просто напишите, что ищете, или нажмите кнопку меню.",
         reply_markup=MENU,
@@ -453,19 +458,24 @@ async def _run_compare(message: Message, text: str) -> None:
         if not candidates:
             await progress.edit_text("Не нашёл товаров по этому запросу.")
             return
-        ozon_items = [p for p in candidates if p.marketplace == "ozon"]
-        yandex_items = [p for p in candidates if p.marketplace == "yandex"]
         rows = []
-        for target in ozon_items[:3]:
-            result = await compare_across_markets(llm, target, yandex_items)
-            if result is not None:
-                rows.append(result)
+        for target in candidates[:3]:
+            for other in ("ozon", "yandex", "wb"):
+                if other == target.marketplace:
+                    continue
+                pool = [p for p in candidates if p.marketplace == other]
+                if not pool:
+                    continue
+                result = await compare_across_markets(llm, target, pool)
+                if result is not None:
+                    rows.append(result)
+                    break  # одна строка на товар (лучший матч на другой площадке)
         await progress.delete()
         if not rows:
             await message.answer("⚖️ Тот же товар на другой площадке не найден "
                                  "(проверьте написание или попробуйте другое название).")
             return
-        kb = compare_keyboard(rows[0].ozon_url, rows[0].yandex_url)
+        kb = compare_keyboard(rows[0].ozon_url, rows[0].yandex_url, rows[0].wb_url)
         await message.answer(_compare_text(rows), reply_markup=kb)
     except BudgetExceeded:
         info = await llm.budget_info()
@@ -559,7 +569,7 @@ async def _set_mode(message: Message, mode: str, reply: str) -> None:
 
 
 def _markets(state: SessionState) -> list[str] | None:
-    if state.default_market in ("ozon", "yandex"):
+    if state.default_market in ("ozon", "yandex", "wb"):
         return [state.default_market]
     return None
 

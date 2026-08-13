@@ -66,6 +66,22 @@ YANDEX = [
        "4607000000023", "SilkSleep", ["чёрный", "шёлк"]),
 ]
 
+# ── каталог: Wildberries (те же товары, цены WB — для сравнения втроём) ──
+WILD = [
+    _p("wb", "snk-001w", "Кроссовки белые Urban Runner", 4590, 4.1, 2080,
+       "4607000000011", "Urban", ["белый", "кроссовки"]),
+    _p("wb", "snk-002w", "Кроссовки мужские Air Flex белые", 6990, 4.5, 3120,
+       "4607000000012", "AirFlex", ["белый", "мужские", "кроссовки"]),
+    _p("wb", "snk-003w", "Кроссовки женские Comfy Run розовые", 5990, 4.3, 1400,
+       "4607000000013", "Comfy", ["розовый", "женские", "кроссовки"]),
+    _p("wb", "msk-001w", "Маска для сна 3D чёрная с пространством для ресниц",
+       780, 4.6, 2150, "4607000000021", "SilkSleep", ["чёрный", "3D", "для ресниц"]),
+    _p("wb", "msk-002w", "Маска для сна 3D серая", 720, 4.3, 890,
+       "4607000000022", "SilkSleep", ["серый", "3D"]),
+    _p("wb", "msk-003w", "Маска шёлковая чёрная для сна", 1150, 4.4, 1300,
+       "4607000000023", "SilkSleep", ["чёрный", "шёлк"]),
+]
+
 # ── отзывы (ключевые слова — для вердиктов Review Intelligence) ───
 _REVIEWS: dict[tuple[str, str], list[Review]] = {}
 
@@ -139,7 +155,7 @@ class _MockAdapter(BaseAdapter):
 
     @property
     def catalog(self) -> list[Product]:
-        return OZON if self.marketplace == "ozon" else YANDEX
+        return {"ozon": OZON, "yandex": YANDEX, "wb": WILD}[self.marketplace]
 
     def _reviews(self, ext_id: str) -> list[Review]:
         return list(_REVIEWS.get((self.marketplace, ext_id), []))
@@ -172,3 +188,8 @@ class MockOzonAdapter(_MockAdapter):
 class MockYandexAdapter(_MockAdapter):
     name = "yandex"
     marketplace = "yandex"
+
+
+class MockWbAdapter(_MockAdapter):
+    name = "wb"
+    marketplace = "wb"

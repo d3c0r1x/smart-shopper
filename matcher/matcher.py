@@ -80,18 +80,25 @@ async def arbiter_confirm(llm: LLMGateway, a: Product, b: Product) -> ArbiterVer
 
 
 def build_compare_result(a: Product, b: Product) -> CompareResult:
-    """Строка сравнения: кто дешевле и на сколько процентов."""
+    """Строка сравнения: кто дешевле и на сколько процентов.
+
+    Пара площадок может быть любой (ozon↔yandex, ozon↔wb, yandex↔wb) —
+    цены раскладываются по полям площадок, остальные остаются None.
+    """
     cheaper: str | None = None
     diff: int | None = None
     if a.price and b.price and a.price != b.price:
         cheaper = a.marketplace if a.price < b.price else b.marketplace
         diff = round(abs(a.price - b.price) / max(a.price, b.price) * 100)
+    prices: dict[str, int | None] = {"ozon": None, "yandex": None, "wb": None}
+    urls: dict[str, str] = {"ozon": "", "yandex": "", "wb": ""}
+    for p in (a, b):
+        prices[p.marketplace] = p.price
+        urls[p.marketplace] = p.url
     return CompareResult(
-        title=a.title if a.marketplace == "ozon" else b.title,
-        ozon=a.price if a.marketplace == "ozon" else b.price,
-        yandex=b.price if a.marketplace == "ozon" else a.price,
-        ozon_url=a.url if a.marketplace == "ozon" else b.url,
-        yandex_url=b.url if a.marketplace == "ozon" else a.url,
+        title=a.title,
+        ozon=prices["ozon"], yandex=prices["yandex"], wb=prices["wb"],
+        ozon_url=urls["ozon"], yandex_url=urls["yandex"], wb_url=urls["wb"],
         cheaper=cheaper,
         diff_percent=diff,
     )

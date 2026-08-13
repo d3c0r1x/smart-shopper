@@ -1,0 +1,148 @@
+"""Браузерный канал Wildberries (канал 1: реальные данные через браузер).
+
+Публичные JSON-эндпоинты WB (search.wb.ru, card.wb.ru) с этого IP
+блокируются (429/403) даже с имитацией Chrome через curl_cffi. Как и для
+Яндекса/Ozon, рабочий путь — настоящий браузер (Playwright + системный
+Chrome) через прокси: поисковая страница отдаёт полный DOM выдачи.
+
+Карточки: article.product-card → ссылка a.product-card__link (название в
+aria-label, href → /catalog/{id}/detail.aspx), цена в ins/span с классом
+price (текст вида «489 ₽2 940 ₽−83%» — берём первое число до «₽»).
+
+Если страница не загрузилась (сеть/блок) — честно возвращаем пустоту.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+
+from models import Product, Review
+
+logger = logging.getLogger(__name__)
+
+SEARCH_URL = "https://www.wildberries.ru/catalog/0/search.aspx?search="
+
+_PARSE_SCRIPT = r"""
+() => {
+    const out = [];
+    document.querySelectorAll("article[class*='product-card']").forEach(card => {
+        const a = card.querySelector("a[class*='product-card__link']");
+        if (!a) return;
+        const href = a.getAttribute('href') || '';
+        const label = (a.getAttribute('aria-label') || a.getAttribute('title') || '').trim();
+        const priceEl = card.querySelector("ins[class*='price'], span[class*='price']");
+        const price = priceEl ? (priceEl.textContent || '').trim() : '';
+        if (label && price && href) out.push({href, label, price});
+    });
+    return out.slice(0, LIMIT);
+}
+"""
+
+# Цены приходят с тонкими/неразрывными пробелами (U+2009/U+00A0) — берём
+# число до первого «₽» и удаляем все нецифровые символы.
+_PRICE_RE = re.compile(r"([\d\u00a0\u2009 ]{1,})\s*₽")
+
+
+class WbBrowserAdapter:
+    """Канал 1 WB: настоящий браузер + прокси (по образцу yandex_browser)."""
+
+    name = "wb"
+
+    def __init__(self, proxy: str = "", chrome_path: str | None = None,
+                 timeout: float = 40.0) -> None:
+        self._proxy = proxy
+        self._chrome_path = chrome_path or (
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        self._timeout = timeout
+        self._pw = None
+        self._browser = None
+
+    async def _ensure_browser(self):
+        if self._browser is not None:
+            return
+        from playwright.async_api import async_playwright
+        self._pw = await async_playwright().start()
+        self._browser = await self._pw.chromium.launch(
+            executable_path=self._chrome_path,
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"])
+        logger.info("WB-браузер запущен (прокси: %s)", self._proxy or "нет")
+
+    async def aclose(self) -> None:
+        if self._browser is not None:
+            await self._browser.close()
+            self._browser = None
+        if self._pw is not None:
+            await self._pw.stop()
+            self._pw = None
+
+    async def _new_page(self):
+        await self._ensure_browser()
+        ctx_opts = dict(
+            viewport={"width": 1600, "height": 900},
+            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/126.0.0.0 Safari/537.36"),
+            locale="ru-RU")
+        if self._proxy:
+            ctx_opts["proxy"] = {"server": self._proxy}
+        ctx = await self._browser.new_context(**ctx_opts)
+        await ctx.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+        page = await ctx.new_page()
+        page.set_default_timeout(30000)
+        return ctx, page
+
+    async def search(self, query: str, limit: int = 5) -> list[Product]:
+        ctx, page = await self._new_page()
+        try:
+            url = SEARCH_URL + query.replace(" ", "+")
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            for _ in range(6):
+                await asyncio.sleep(2.5)
+                await page.mouse.wheel(0, 2500)
+                if await page.query_selector("article[class*='product-card']"):
+                    break
+            raw = await page.evaluate(_PARSE_SCRIPT.replace("LIMIT", str(limit)))
+            return self._cards_from_raw(raw)
+        except Exception as exc:
+            logger.warning("WB-браузер: сбой поиска %r: %s", query, exc)
+            return []
+        finally:
+            await ctx.close()
+
+    def _cards_from_raw(self, raw: list[dict]) -> list[Product]:
+        out: list[Product] = []
+        for r in raw:
+            label = (r.get("label") or "").strip()
+            price = self._parse_price(r.get("price") or "")
+            href = r.get("href") or ""
+            if not label or price is None or not href:
+                continue
+            m = re.search(r"/catalog/(\d+)/", href)
+            ext_id = m.group(1) if m else href.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+            out.append(Product(
+                marketplace="wb", ext_id=ext_id,
+                title=label[:120], price=price,
+                url=("https://www.wildberries.ru" + href
+                     if href.startswith("/") else href),
+            ))
+        return out
+
+    @staticmethod
+    def _parse_price(text: str) -> int | None:
+        m = _PRICE_RE.search(text)
+        if not m:
+            return None
+        digits = re.sub(r"\D", "", m.group(1))
+        return int(digits) if digits else None
+
+    async def get_card(self, ext_id: str) -> Product | None:
+        return None
+
+    async def get_reviews(self, ext_id: str, limit: int = 20) -> list[Review]:
+        return []
+
+    async def get_photos(self, ext_id: str) -> list[str]:
+        return []

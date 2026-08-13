@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-Marketplace = Literal["ozon", "yandex"]
+Marketplace = Literal["ozon", "yandex", "wb"]
 
 
 class Product(BaseModel):
@@ -95,13 +95,15 @@ class VisionDescription(BaseModel):
 
 
 class CompareResult(BaseModel):
-    """Строка сравнения цен одного товара на двух площадках."""
+    """Строка сравнения цен одного товара на площадках (Ozon/Яндекс/WB)."""
 
     title: str
     ozon: int | None = None
     yandex: int | None = None
+    wb: int | None = None
     ozon_url: str = ""
     yandex_url: str = ""
+    wb_url: str = ""
     cheaper: Marketplace | None = None
     diff_percent: int | None = None  # насколько % дешевле
 
@@ -115,4 +117,4 @@ class SessionState(BaseModel):
     last_results: list[Product] = Field(default_factory=list)
     focus_product: Product | None = None
     history: list[str] = Field(default_factory=list)  # сжатые реплики
-    default_market: str = "both"  # both | ozon | yandex
+    default_market: str = "both"  # both | ozon | yandex | wb

@@ -72,7 +72,7 @@ API_ALLOW_ANON = os.getenv("SHOPPER_API_ALLOW_ANON", "1") == "1"
 
 # ── UX ────────────────────────────────────────────────────────────
 THROTTLE_MIN_INTERVAL = float(os.getenv("SHOPPER_THROTTLE_MIN_INTERVAL", "0.7"))
-DEFAULT_MARKETPLACE = os.getenv("SHOPPER_DEFAULT_MARKETPLACE", "both")  # both|ozon|yandex
+DEFAULT_MARKETPLACE = os.getenv("SHOPPER_DEFAULT_MARKETPLACE", "both")  # both|ozon|yandex|wb
 
 # Сколько кандидатов отбирается на каждом этапе (PRD, раздел 6)
 CANDIDATES_PER_MARKET = int(os.getenv("SHOPPER_CANDIDATES_PER_MARKET", "10"))

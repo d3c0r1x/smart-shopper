@@ -121,21 +121,21 @@ class Orchestrator:
                               progress: ProgressCb | None,
                               markets: list[str] | None = None) -> SearchOutcome:
         if progress:
-            await progress("🔎 Ищу на Ozon и Яндекс Маркете…")
+            await progress("🔎 Ищу на Ozon, Яндексе и Wildberries…")
 
         adapters = [a for a in self._adapters
                     if markets is None or a.name in markets]
-        results = await asyncio.gather(
-            *[self._search_market(adapter, constraints.query)
-              for adapter in adapters],
-            return_exceptions=True,
-        )
+        # Последовательно с вежливой паузой: браузерные каналы (Ozon/Яндекс/WB)
+        # при одновременном старте роняют антибот-челлендж Ozon (проверено).
         candidates: list[Product] = []
-        for res in results:
-            if isinstance(res, Exception):
-                logger.warning("Адаптер упал: %s", res)
-                continue
-            candidates.extend(res)
+        for adapter in adapters:
+            try:
+                candidates.extend(
+                    await self._search_market(adapter, constraints.query))
+            except Exception as exc:
+                logger.warning("Адаптер %s упал: %s", adapter.name, exc)
+            if len(adapters) > 1:
+                await asyncio.sleep(config.POLITE_DELAY)
         candidates = _dedupe(candidates)
 
         if not candidates:
@@ -212,8 +212,11 @@ class Orchestrator:
         except Exception as exc:
             logger.warning("Поиск в %s упал: %s", adapter.name, exc)
             return []
-        await self._db.cache_set_products(cache_key, products,
-                                          config.CACHE_SEARCH_TTL)
+        # Пустые результаты (антибот/блокировка) не кэшируем — иначе
+        # неудачный поиск «замораживает» площадку на весь TTL.
+        if products:
+            await self._db.cache_set_products(cache_key, products,
+                                              config.CACHE_SEARCH_TTL)
         return products
 
     async def _load_reviews(self, p: Product) -> list:
