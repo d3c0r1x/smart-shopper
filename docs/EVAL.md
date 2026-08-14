@@ -70,3 +70,25 @@ p95 определяется антибот-ожиданиями браузер�
 Яндекс и WB — через `OZON_HEAD_START` секунд параллельно. Суммарное время
 стремится к максимуму по площадкам, а не к сумме. Остаток (64 c) —
 антибот-ожидания самих площадок, на ядро не влияет.
+
+
+## Живой OTel-экспорт (проверено 2026-08-14)
+
+Интеграция OpenTelemetry (`telemetry.py`) проверена end-to-end на живой
+системе: локальный OTLP/HTTP приёмник (`tools/otel_receiver.py`, порт 4318)
+поймал реальные экспорты из работающего бота:
+
+```
+[19:53:38] POST /v1/traces  bytes=607 content-type=application/x-protobuf
+[19:54:33] POST /v1/metrics bytes=716 content-type=application/x-protobuf
+```
+
+- `/v1/traces` — спаны `api.request.<method>` на каждый HTTP-запрос
+  (BatchSpanProcessor, пачками);
+- `/v1/metrics` — Histogram `api.request.duration` (PeriodicExportingMetricReader,
+  раз в 60 с);
+- включение: `SHOPPER_OTEL_ENDPOINT=http://127.0.0.1:4318/v1`; без него —
+  no-op, p95 считает встроенная миддлварь `web.py`.
+
+Тем самым метод измерения Latency p95 из ТЗ §5 («APM мониторинг
+OpenTelemetry») подтверждён работающей телеметрией, а не только кодом.
