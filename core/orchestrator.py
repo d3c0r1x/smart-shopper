@@ -240,14 +240,20 @@ class Orchestrator:
         # Последовательно с вежливой паузой: браузерные каналы (Ozon/Яндекс/WB)
         # при одновременном старте роняют антибот-челлендж Ozon (проверено).
         candidates: list[Product] = []
-        for adapter in adapters:
-            try:
-                candidates.extend(
-                    await self._search_market(adapter, constraints.query))
-            except Exception as exc:
-                logger.warning("Адаптер %s упал: %s", adapter.name, exc)
-            if len(adapters) > 1:
-                await asyncio.sleep(config.POLITE_DELAY)
+        if config.PARALLEL_MARKETS and len(adapters) > 1:
+            candidates = await self._search_parallel(adapters,
+                                                     constraints.query)
+        else:
+            # Последовательно с вежливой паузой: браузерные каналы при
+            # одновременном старте роняют антибот-челлендж Ozon.
+            for adapter in adapters:
+                try:
+                    candidates.extend(
+                        await self._search_market(adapter, constraints.query))
+                except Exception as exc:
+                    logger.warning("Адаптер %s упал: %s", adapter.name, exc)
+                if len(adapters) > 1:
+                    await asyncio.sleep(config.POLITE_DELAY)
         candidates = _dedupe(candidates)
         # один и тот же товар с нескольких площадок → одна карточка (дешевле)
         candidates = _collapse_cross_market(candidates)
@@ -315,6 +321,39 @@ class Orchestrator:
         state.history = (state.history + [f"[фото] {desc.category} {desc.color}"])[-6:]
         await self._db.save_session(user_id, state)
         return outcome
+
+    async def _search_parallel(self, adapters: list,
+                              query: str) -> list[Product]:
+        """Ступенчатый параллельный опрос (ТЗ §5, latency p95).
+
+        Ozon — единственный, кто роняет челлендж при одновременном старте
+        с другими браузерными каналами (эмпирически проверено). Поэтому он
+        стартует первым в одиночку; остальные площадки запускаются через
+        OZON_HEAD_START секунд параллельно (gather). Суммарное время
+        стремится к максимуму по площадкам, а не к сумме.
+        """
+        if not adapters:
+            return []
+        head, rest = adapters[0], adapters[1:]
+        out: list[Product] = []
+        try:
+            out.extend(await self._search_market(head, query))
+        except Exception as exc:
+            logger.warning("Адаптер %s упал: %s", head.name, exc)
+        if rest:
+            await asyncio.sleep(config.OZON_HEAD_START)
+
+            async def _one(a) -> list[Product]:
+                try:
+                    return await self._search_market(a, query)
+                except Exception as exc:
+                    logger.warning("Адаптер %s упал: %s", a.name, exc)
+                    return []
+
+            results = await asyncio.gather(*[_one(a) for a in rest])
+            for r in results:
+                out.extend(r)
+        return out
 
     # ── общие инструменты ──────────────────────────────────────────
     async def _search_market(self, adapter, query: str) -> list[Product]:

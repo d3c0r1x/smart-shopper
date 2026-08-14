@@ -56,6 +56,13 @@ SUBSCRIPTION_URL = os.getenv("SHOPPER_SUBSCRIPTION_URL", "")
 MAX_RETRIES = int(os.getenv("SHOPPER_MAX_RETRIES", "3"))
 # Вежливая пауза между запросами к публичным эндпоинтам (секунды).
 POLITE_DELAY = float(os.getenv("SHOPPER_POLITE_DELAY", "0.4"))
+# Ступенчатый параллельный опрос площадок (ТЗ §5, latency p95).
+# Ozon стартует первым в одиночку, остальные — через OZON_HEAD_START
+# секунд параллельно: суммарное время -> максимуму, челлендж Ozon
+# при этом не ломается (проверено живым A/B).
+PARALLEL_MARKETS = os.getenv("SHOPPER_PARALLEL_MARKETS", "1") == "1"
+OZON_HEAD_START = float(os.getenv("SHOPPER_OZON_HEAD_START", "3"))
+
 # Этичный парсинг (ТЗ §4): уважение robots.txt + кэш файла на 1 час.
 RESPECT_ROBOTS = os.getenv("SHOPPER_RESPECT_ROBOTS", "1") == "1"
 ROBOTS_TIMEOUT = float(os.getenv("SHOPPER_ROBOTS_TIMEOUT", "5"))
