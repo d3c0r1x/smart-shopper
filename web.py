@@ -209,6 +209,8 @@ async def handle_stats(request: web.Request) -> web.Response:
             "ok": (freshness["newest_age_s"] is None
                     or freshness["newest_age_s"] <= 3600),
         },
+        # Coverage (ТЗ §5): успешность парсинга по площадкам
+        "coverage": ctx.orch.market_stats(),
     })
 
 

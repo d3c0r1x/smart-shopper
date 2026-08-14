@@ -762,10 +762,20 @@ async def _diag_text() -> str:
     lines.append(f"Канал 1 (JSON-эндпоинты): <b>{capture_status}</b>")
 
     names = {"ozon": "Ozon", "yandex": "Яндекс", "wb": "Wildberries"}
+    stats = orch.market_stats() if orch is not None else {}
     for adapter in adapters:
         name = names.get(getattr(adapter, "name", ""),
                          getattr(adapter, "name", type(adapter).__name__))
-        lines.append(f"• {name}: адаптер подключён; проверяется при поиске")
+        st = stats.get(adapter.name)
+        if st and st["total"]:
+            cov = st["coverage_pct"]
+            mark = "🟢" if cov >= 90 else ("🟡" if cov > 0 else "🔴")
+            lines.append(
+                f"• {name}: успех {st['ok']}/{st['total']} ({cov}%) {mark}"
+                f" (пусто {st['empty']}, ошибки {st['error']}, "
+                f"таймауты {st['timeout']})")
+        else:
+            lines.append(f"• {name}: адаптер подключён; ещё не искал")
 
     info = await llm.budget_info()
     provider = info.get("provider", "?")

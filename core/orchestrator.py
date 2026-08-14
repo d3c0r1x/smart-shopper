@@ -121,6 +121,8 @@ class Orchestrator:
         self._db = db
         self._llm = llm
         self._adapters = adapters
+        # мониторинг успешности парсинга (ТЗ §5, Coverage >= 90%)
+        self._market_stats: dict[str, dict] = {}
         # Гибридный реранкер (ТЗ §2). Строится всегда при включённом
         # семантическом слое; клиент httpx — ленивый, сети в __init__ нет.
         self._reranker: HybridReranker | None = None
@@ -134,6 +136,29 @@ class Orchestrator:
             self._reranker = HybridReranker(embedder, config.RERANK_WEIGHTS)
         else:
             logger.info("Семантический слой выключен (SHOPPER_SEMANTIC_ENABLED=0)")
+
+    def market_stats(self) -> dict[str, dict]:
+        """Coverage по адаптерам: успех / пусто / ошибка / таймаут / всего."""
+        out = {}
+        for name, st in self._market_stats.items():
+            total = st.get("total", 0)
+            ok = st.get("ok", 0)
+            coverage = round(100.0 * ok / total, 1) if total else None
+            out[name] = {
+                "total": total,
+                "ok": ok,
+                "empty": st.get("empty", 0),
+                "error": st.get("error", 0),
+                "timeout": st.get("timeout", 0),
+                "coverage_pct": coverage,
+            }
+        return out
+
+    def _record_market(self, name: str, outcome: str) -> None:
+        st = self._market_stats.setdefault(
+            name, {"total": 0, "ok": 0, "empty": 0, "error": 0, "timeout": 0})
+        st["total"] += 1
+        st[outcome] += 1
 
     async def aclose(self) -> None:
         if self._reranker is not None:
@@ -303,19 +328,24 @@ class Orchestrator:
                 timeout=config.MARKET_SEARCH_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
+            self._record_market(adapter.name, "timeout")
             logger.warning(
                 "Поиск %s/%s не завершён за %.1f с; площадка пропущена",
                 adapter.name, query, config.MARKET_SEARCH_TIMEOUT_SECONDS,
             )
             return []
         except Exception as exc:
+            self._record_market(adapter.name, "error")
             logger.warning("Поиск в %s упал: %s", adapter.name, exc)
             return []
         # Пустые результаты (антибот/блокировка) не кэшируем — иначе
         # неудачный поиск «замораживает» площадку на весь TTL.
         if products:
+            self._record_market(adapter.name, "ok")
             await self._db.cache_set_products(cache_key, products,
                                               config.CACHE_SEARCH_TTL)
+        else:
+            self._record_market(adapter.name, "empty")
         return products
 
     async def _load_reviews(self, p: Product) -> list:
