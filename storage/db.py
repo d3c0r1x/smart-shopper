@@ -72,6 +72,11 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache(expires_at);
             """
         )
+        # миграция: created_at для метрики Data Freshness (ТЗ §5)
+        try:
+            await self._conn.execute("ALTER TABLE cache ADD COLUMN created_at TEXT")
+        except Exception:
+            pass  # колонка уже есть
         await self._conn.commit()
 
     # ── сессии диалога ────────────────────────────────────────────
@@ -110,12 +115,13 @@ class Database:
 
     async def cache_set(self, key: str, value: str, ttl_seconds: int) -> None:
         assert self._conn is not None
-        expires = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+        now = datetime.now(timezone.utc)
+        expires = (now + timedelta(seconds=ttl_seconds)).isoformat()
         await self._conn.execute(
-            "INSERT INTO cache (key, value, expires_at) VALUES (?, ?, ?) "
+            "INSERT INTO cache (key, value, created_at, expires_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
-            "expires_at = excluded.expires_at",
-            (key, value, expires),
+            "created_at = excluded.created_at, expires_at = excluded.expires_at",
+            (key, value, now.isoformat(), expires),
         )
         await self._conn.commit()
 
@@ -129,6 +135,21 @@ class Database:
                                  ttl_seconds: int) -> None:
         await self.cache_set(key, json.dumps([p.model_dump() for p in products]),
                              ttl_seconds)
+
+    async def cache_freshness(self) -> dict:
+        """Метрика Data Freshness (ТЗ §5): возраст самой свежей записи кэша."""
+        assert self._conn is not None
+        cur = await self._conn.execute(
+            "SELECT COUNT(*) AS n, MAX(created_at) AS newest, "
+            "MIN(created_at) AS oldest FROM cache")
+        row = await cur.fetchone()
+        n = row["n"] or 0
+        newest = row["newest"]
+        if not newest:
+            return {"entries": n, "newest_age_s": None, "newest_at": None}
+        age = (datetime.now(timezone.utc)
+               - datetime.fromisoformat(newest)).total_seconds()
+        return {"entries": n, "newest_age_s": round(age, 1), "newest_at": newest}
 
     async def cache_get_reviews(self, key: str) -> list[Review] | None:
         raw = await self.cache_get(key)

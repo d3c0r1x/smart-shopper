@@ -193,6 +193,7 @@ async def handle_stats(request: web.Request) -> web.Response:
     """Метрики (ТЗ §5): uptime, запросы, p95 latency по эндпоинтам."""
     ctx = request.app[CTX_KEY]
     _resolve_user(request)
+    freshness = await ctx.db.cache_freshness()
     return web.json_response({
         "uptime_s": round(time.monotonic() - APP_START, 1),
         "requests": _REQUESTS["total"],
@@ -200,6 +201,14 @@ async def handle_stats(request: web.Request) -> web.Response:
         "samples": {p: len(dq) for p, dq in _LATENCY.items()},
         "semantic": _semantic_state(ctx),
         "demo": config.DEMO_MODE,
+        # Data Freshness (ТЗ §5): цель <= 1 ч (3600 c)
+        "data_freshness": {
+            **freshness,
+            "target_s": 3600,
+            # пустой кэш (None) — нет данных, значит нет и устаревших
+            "ok": (freshness["newest_age_s"] is None
+                    or freshness["newest_age_s"] <= 3600),
+        },
     })
 
 
