@@ -58,9 +58,12 @@
   (проверено 2026-08); повторять при каждом обновлении зависимостей:
   `python -m pip_audit -r requirements.txt` (с `PYTHONUTF8=1` на Windows)
   и `cd miniapp && npm audit`.
-- Подпись коммитов GPG — не настроена (личный репозиторий).
-  Для публичного проекта: `git config commit.gpgsign true` + ключ в
-  GitHub (SSH signing / GPG).
+- Подпись коммитов GPG — **настроена**: ключ ed25519
+  (`6535D36F20DA9E53`, d3c0r1x@users.noreply.github.com), в репозитории
+  включены `user.signingkey` и `commit.gpgsign` (локально, не глобально).
+  Для отображения значка «Verified» на GitHub публичный ключ нужно
+  добавить в настройки аккаунта (Settings → SSH and GPG keys → New GPG
+  key): `gpg --armor --export 6535D36F20DA9E53`.
 
 ## Изоляция окружения (ТЗ §4)
 
