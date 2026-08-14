@@ -1,0 +1,28 @@
+# Секреты — никогда в образ
+.env
+.env.*
+!.env.example
+
+# Локальные данные и логи
+bot.log
+bot_run.log
+*.sqlite
+*.sqlite3
+*.db
+captured/
+*.json.captured
+
+# Окружения и артефакты Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Mini App (Node) — собирается отдельно, не нужна в образе бота
+miniapp/node_modules/
+miniapp/dist/
+
+# git и инструменты
+.git/
+.dockerignore

@@ -290,8 +290,18 @@ cloudflared tunnel --url http://127.0.0.1:8081
 VITE_API_URL=https://<random>.trycloudflare.com npm run build  # в miniapp/
 ```
 
-Для постоянного хостинга бэкенда используйте любой PaaS/VPS
-(Dockerfile приложен); `web.py` слушает `0.0.0.0` и не зависит от бота.
+Для постоянного хостинга бэкенда используйте любой PaaS/VPS; `web.py`
+слушает `0.0.0.0` и не зависит от бота. Деплой в Docker-песочнице
+(ТЗ §4 — изоляция окружения, не-root, секреты вне образа):
+
+```bash
+docker build -t smart-shopper .
+docker run --rm -d -p 8081:8081 --env-file ../.env --name shopper smart-shopper
+```
+
+Ключи из корневого `.env` маппятся ботом автоматически (TG_TOKEN →
+SHOPPER_BOT_TOKEN и т.д.); секреты не копируются в образ
+(`.dockerignore`), healthcheck — через `/health`.
 
 | Метод | Путь | Параметры |
 |---|---|---|
