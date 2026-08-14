@@ -29,6 +29,7 @@
 | aiogram 3 | Telegram Bot API | MIT | Используется |
 | aiohttp | HTTP-API и клиенты | Apache 2.0 | Используется |
 | aiosqlite | Хранилище сессий/кэша | MIT | Используется |
+| opentelemetry-* | APM-мониторинг p95 (опционально) | Apache 2.0 | Используется (no-op без эндпоинта) |
 
 Из рекомендованного в ТЗ стека (Crawlee, Qdrant/Milvus/ChromaDB,
 LangGraph/LlamaIndex, thefuzz/rapidfuzz, Scrapy) **осознанно не взяты** —
@@ -49,9 +50,29 @@ LangGraph/LlamaIndex, thefuzz/rapidfuzz, Scrapy) **осознанно не вз�
   нечёткое название (встроенный `difflib`/нормализация) + LLM-арбитр;
   отдельная библиотека не нужна.
 
-Критерии ТЗ «активность > 3 мес, звёзды > 500» соблюдены для всех
-фактических зависимостей; ключевые (aiogram, aiohttp, Ollama) — активно
-поддерживаемые проекты с тысячами звёзд.
+### 2.3 Проверка кандидатов из ТЗ по GitHub API (проверено 2026-08-14)
+
+Реальный запрос к GitHub REST API (`GET /repos/{owner}/{repo}`) по
+рекомендованному в ТЗ стеку — критерии: license MIT/Apache-2.0/BSD,
+звёзды > 500, последний push ≤ 3 мес:
+
+| Проект | Звёзды | Последний push | Лицензия | Вердикт по ТЗ §3 |
+|---|---|---|---|---|
+| scrapy/scrapy | 63 844 | 2026-08-14 | BSD-3-Clause | проходит |
+| run-llama/llama_index | 51 638 | 2026-08-14 | MIT | проходит |
+| milvus-io/milvus | 45 635 | 2026-08-14 | Apache-2.0 | проходит |
+| langchain-ai/langgraph | 39 680 | 2026-08-14 | MIT | проходит |
+| qdrant/qdrant | 33 973 | 2026-08-14 | Apache-2.0 | проходит |
+| chroma-core/chroma | 29 058 | 2026-08-14 | Apache-2.0 | проходит |
+| apify/crawlee | 25 384 | 2026-08-14 | Apache-2.0 | проходит |
+| rapidfuzz/RapidFuzz | 4 067 | 2026-08-10 | MIT | проходит |
+| seatgeek/thefuzz | 3 648 | **2025-03-03** | MIT | **не проходит** (push > 3 мес) |
+
+Вывод: 8 из 9 кандидатов формально соответствуют критериям ТЗ §3. Единственный
+выпавший — thefuzz (не обновлялся более года), что подтверждает выбор
+rapidfuzz как его форка-преемника. Все кандидаты при этом **осознанно не
+взяты** в проект по причинам ниже — соответствие критериям не означает
+необходимость использования.
 
 ## 3. Безопасность (ТЗ §4)
 
@@ -62,6 +83,15 @@ LangGraph/LlamaIndex, thefuzz/rapidfuzz, Scrapy) **осознанно не вз�
 RFC 9309) и **экспоненциальный backoff** на 429/5xx (`adapters/base.py`).
 Supply chain: `pip-audit` и `npm audit` — 0 уязвимостей (2026-08).
 Полный разбор и остаточные риски — `docs/SECURITY.md`.
+
+### OpenTelemetry (ТЗ §5: метод измерения p95)
+
+Задержка каждого HTTP-запроса измеряется встроенной миддлварью
+(`web.py::_timing_middleware`), которая параллельно пишет span
+`api.request.<method>` и Histogram `api.request.duration` в OpenTelemetry
+(`telemetry.py`), если задан `SHOPPER_OTEL_ENDPOINT` (OTLP/HTTP).
+Без эндпоинта телеметрия — no-op, метрики считает миддлварь.
+Пакеты: opentelemetry-api/sdk/exporter-otlp-proto-http, Apache-2.0.
 
 ## 4. Метрики качества (ТЗ §5)
 

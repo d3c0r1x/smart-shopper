@@ -26,6 +26,11 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DAILY_LLM_LIMIT = int(os.getenv("SHOPPER_DAILY_LLM_LIMIT", "50"))
 # Лимит запросов в минуту на :free-модели: 20 [[8]].
 RATE_PER_MINUTE = int(os.getenv("SHOPPER_RATE_PER_MINUTE", "20"))
+# ── OpenTelemetry (ТЗ §5: APM мониторинг) ────────────────────────
+# OTLP HTTP endpoint (напр. http://localhost:4318/v1). Если пусто —
+# телеметрия выключена, метрики считает встроенная миддлварь web.py.
+OTEL_ENDPOINT = os.getenv("SHOPPER_OTEL_ENDPOINT", "").rstrip("/")
+
 # Потолок времени на один структурный вызов LLM (сек). При превышении —
 # честный фолбэк на mock, чтобы бот оставался отзывчивым.
 STRUCTURED_MAX_SECONDS = float(os.getenv("SHOPPER_STRUCTURED_MAX_SECONDS", "40"))

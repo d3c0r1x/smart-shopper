@@ -35,6 +35,7 @@ from aiohttp import web
 from aiohttp.web import AppKey
 
 import config
+import telemetry
 from llm.gateway import BudgetExceeded
 from models import Product, Review
 
@@ -275,11 +276,13 @@ async def _error_middleware(request: web.Request, handler):
 async def _timing_middleware(request: web.Request, handler):
     """Замер латентности каждого запроса (метрики ТЗ §5)."""
     t0 = time.monotonic()
-    try:
-        return await handler(request)
-    finally:
-        _REQUESTS["total"] += 1
-        _LATENCY[request.path].append((time.monotonic() - t0) * 1000.0)
+    with telemetry.start_span(f"api.request.{request.method}"):
+        try:
+            return await handler(request)
+        finally:
+            _REQUESTS["total"] += 1
+            _LATENCY[request.path].append((time.monotonic() - t0) * 1000.0)
+            telemetry.record_duration_ms((time.monotonic() - t0) * 1000.0)
 
 
 class ApiContext:
