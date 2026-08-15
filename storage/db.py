@@ -24,6 +24,13 @@ class Database:
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(self._path)
         self._conn.row_factory = aiosqlite.Row
+        # Стабильность при конкурентной записи (ТЗ §4): WAL разрешает чтение
+        # во время записи, busy_timeout ждёт освобождения блокировки вместо
+        # мгновенной ошибки "database is locked", synchronous=NORMAL ускоряет
+        # коммиты без потери консистентности при WAL.
+        await self._conn.execute("PRAGMA journal_mode=WAL;")
+        await self._conn.execute("PRAGMA busy_timeout=5000;")
+        await self._conn.execute("PRAGMA synchronous=NORMAL;")
         await self._init_schema()
 
     async def close(self) -> None:

@@ -16,9 +16,7 @@
 """
 from __future__ import annotations
 
-import re
 
-import pytest
 
 import config
 from llm.guardrails import sanitize_item, sanitize_user_text

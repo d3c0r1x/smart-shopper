@@ -12,7 +12,7 @@ import json
 from adapters.capture import _classify, load_captured, pick_endpoint
 from adapters.ozon import OzonAdapter, _find_reviews, _iter_widget_states
 from adapters.yandex import YandexMarketAdapter, _find_product_objs
-from models import Product, Review
+from models import Review
 
 # ── сэмпл реальной структуры composer-api (widgetStates) ──────────
 OZON_SEARCH_SAMPLE = {
@@ -121,7 +121,7 @@ def test_iter_widget_states_skips_bad_json():
 # ── парсинг Яндекса ───────────────────────────────────────────────
 def test_yandex_parse_json_search():
     a = YandexMarketAdapter()
-    products = a._parse_json_search(YM_SEARCH_SAMPLE, limit=5)
+    products = a._parse_json_search(YM_SEARCH_SAMPLE, limit=5, query="маска")
     assert len(products) == 2
     p = products[0]
     assert p.marketplace == "yandex"

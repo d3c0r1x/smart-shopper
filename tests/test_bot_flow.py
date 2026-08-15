@@ -11,7 +11,6 @@ import asyncio
 import os
 from datetime import datetime
 
-import pytest
 
 os.environ["SHOPPER_DB_PATH"] = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "_test_shopper.db")

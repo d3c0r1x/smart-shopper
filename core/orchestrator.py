@@ -36,6 +36,9 @@ from search.structfilter import StructFilters, parse_structural
 logger = logging.getLogger(__name__)
 
 ProgressCb = Callable[[str], Awaitable[None]]
+# Колбэк «поздней доставки»: медленная площадка (Ozon) завершила поиск
+# после того, как основной ответ уже ушёл пользователю.
+LateResultsCb = Callable[[list[Product]], Awaitable[None]]
 
 
 @dataclass
@@ -123,6 +126,8 @@ class Orchestrator:
         self._adapters = adapters
         # мониторинг успешности парсинга (ТЗ §5, Coverage >= 90%)
         self._market_stats: dict[str, dict] = {}
+        # фоновые задачи медленных площадок (Ozon) — живут до поздней доставки
+        self._pending: list[asyncio.Task] = []
         # Гибридный реранкер (ТЗ §2). Строится всегда при включённом
         # семантическом слое; клиент httpx — ленивый, сети в __init__ нет.
         self._reranker: HybridReranker | None = None
@@ -161,6 +166,10 @@ class Orchestrator:
         st[outcome] += 1
 
     async def aclose(self) -> None:
+        for task in self._pending:
+            if not task.done():
+                task.cancel()
+        self._pending.clear()
         if self._reranker is not None:
             await self._reranker.aclose()
 
@@ -172,11 +181,13 @@ class Orchestrator:
         state: SessionState,
         progress: ProgressCb | None = None,
         markets: list[str] | None = None,
+        late_cb: LateResultsCb | None = None,
     ) -> SearchOutcome:
         if progress:
             await progress("🔎 Понимаю запрос…")
         constraints = await self._extract_constraints(user_text, state)
-        outcome = await self._execute_search(constraints, progress, markets)
+        outcome = await self._execute_search(constraints, progress, markets,
+                                             late_cb)
         outcome.used_llm = True
 
         # память сессии (PRD §5): сжатое состояние для уточнений
@@ -231,21 +242,23 @@ class Orchestrator:
 
     async def _execute_search(self, constraints: SearchConstraints,
                               progress: ProgressCb | None,
-                              markets: list[str] | None = None) -> SearchOutcome:
+                              markets: list[str] | None = None,
+                              late_cb: LateResultsCb | None = None
+                              ) -> SearchOutcome:
         if progress:
             await progress("🔎 Ищу на Ozon, Яндексе и Wildberries…")
 
         adapters = [a for a in self._adapters
                     if markets is None or a.name in markets]
-        # Последовательно с вежливой паузой: браузерные каналы (Ozon/Яндекс/WB)
-        # при одновременном старте роняют антибот-челлендж Ozon (проверено).
+        # Быстрые площадки отдают результат сразу; Ozon уходит в фон и
+        # доставляется через late_cb, когда решит антибот-челлендж.
         candidates: list[Product] = []
         if config.PARALLEL_MARKETS and len(adapters) > 1:
-            candidates = await self._search_parallel(adapters,
-                                                     constraints.query)
+            candidates = await self._search_parallel(adapters, constraints,
+                                                     late_cb)
         else:
-            # Последовательно с вежливой паузой: браузерные каналы при
-            # одновременном старте роняют антибот-челлендж Ozon.
+            # Последовательный фолбэк с вежливой паузой, если
+            # параллельный опрос выключен флагом.
             for adapter in adapters:
                 try:
                     candidates.extend(
@@ -302,12 +315,15 @@ class Orchestrator:
     async def photo_search(self, user_id: int, desc: VisionDescription,
                            state: SessionState,
                            progress: ProgressCb | None = None,
-                           markets: list[str] | None = None) -> SearchOutcome:
+                           markets: list[str] | None = None,
+                           late_cb: LateResultsCb | None = None
+                           ) -> SearchOutcome:
         if progress:
             await progress("📸 Понял фото, ищу похожие товары…")
         query = desc.search_queries[0] if desc.search_queries else desc.category
         constraints = SearchConstraints(query=query, must_have=desc.details)
-        outcome = await self._execute_search(constraints, progress, markets)
+        outcome = await self._execute_search(constraints, progress, markets,
+                                             late_cb)
 
         if outcome.top:
             if progress:
@@ -323,37 +339,74 @@ class Orchestrator:
         return outcome
 
     async def _search_parallel(self, adapters: list,
-                              query: str) -> list[Product]:
-        """Ступенчатый параллельный опрос (ТЗ §5, latency p95).
+                              constraints: SearchConstraints,
+                              late_cb: LateResultsCb | None = None
+                              ) -> list[Product]:
+        """Параллельный опрос площадок (ТЗ §5, latency p95).
 
-        Ozon — единственный, кто роняет челлендж при одновременном старте
-        с другими браузерными каналами (эмпирически проверено). Поэтому он
-        стартует первым в одиночку; остальные площадки запускаются через
-        OZON_HEAD_START секунд параллельно (gather). Суммарное время
-        стремится к максимуму по площадкам, а не к сумме.
+        Быстрые площадки (Яндекс/WB) отдают результат сразу; Ozon уходит
+        в фоновую задачу и доставляется через late_cb, когда решит
+        антибот-челлендж. Если Ozon — единственная площадка, он опрашивается
+        синхронно (показать сразу всё равно нечего). Ошибка одного адаптера
+        не роняет остальных.
         """
+        query = constraints.query
         if not adapters:
             return []
-        head, rest = adapters[0], adapters[1:]
+        slow = [a for a in adapters if a.name == "ozon"]
+        fast = [a for a in adapters if a.name != "ozon"]
+        if slow and not fast:
+            # только Ozon: ждём синхронно — без быстрых площадок нечего
+            # показать сразу, а поздняя доставка без основного ответа
+            # выглядела бы как потерянный поиск.
+            try:
+                return await self._search_market(slow[0], query)
+            except Exception as exc:
+                logger.warning("Адаптер %s упал: %s", slow[0].name, exc)
+                return []
+        if slow:
+            self._pending.append(
+                asyncio.create_task(
+                    self._late_market(slow[0], constraints, late_cb)))
+
+        async def _one(a) -> list[Product]:
+            try:
+                return await self._search_market(a, query)
+            except Exception as exc:
+                logger.warning("Адаптер %s упал: %s", a.name, exc)
+                return []
+
+        results = await asyncio.gather(*[_one(a) for a in fast])
         out: list[Product] = []
-        try:
-            out.extend(await self._search_market(head, query))
-        except Exception as exc:
-            logger.warning("Адаптер %s упал: %s", head.name, exc)
-        if rest:
-            await asyncio.sleep(config.OZON_HEAD_START)
-
-            async def _one(a) -> list[Product]:
-                try:
-                    return await self._search_market(a, query)
-                except Exception as exc:
-                    logger.warning("Адаптер %s упал: %s", a.name, exc)
-                    return []
-
-            results = await asyncio.gather(*[_one(a) for a in rest])
-            for r in results:
-                out.extend(r)
+        for r in results:
+            out.extend(r)
         return out
+
+    async def _late_market(self, adapter, constraints: SearchConstraints,
+                           late_cb: LateResultsCb | None) -> None:
+        """Фоновая доставка медленной площадки (Ozon) после основного ответа.
+
+        Результат проходит тот же лёгкий конвейер (дедуп + коллапс по EAN +
+        префильтр), но без сетевого реранка и LLM — доставка быстрая и
+        детерминированная. Порядок — по популярности, топ-3.
+        """
+        try:
+            products = await self._search_market(adapter, constraints.query)
+        except Exception as exc:
+            logger.warning("Фоновая площадка %s упала: %s", adapter.name, exc)
+            return
+        if not products or late_cb is None:
+            return
+        products = _collapse_cross_market(_dedupe(products))
+        filtered = _prefilter(products, constraints)
+        pool = filtered or products
+        top = sorted(pool, key=_popularity, reverse=True)[:3]
+        if not top:
+            return
+        try:
+            await late_cb(top)
+        except Exception as exc:
+            logger.warning("Поздняя доставка %s упала: %s", adapter.name, exc)
 
     # ── общие инструменты ──────────────────────────────────────────
     async def _search_market(self, adapter, query: str) -> list[Product]:
@@ -361,16 +414,20 @@ class Orchestrator:
         cached = await self._db.cache_get_products(cache_key)
         if cached is not None:
             return cached
+        # Ozon решает антибот-челлендж медленно и нестабильно — он опрашивается
+        # в фоне (см. _search_parallel), поэтому его лимит — полное окно челленджа.
+        timeout = (config.OZON_TIMEOUT_SECONDS if adapter.name == "ozon"
+                   else config.MARKET_SEARCH_TIMEOUT_SECONDS)
         try:
             products = await asyncio.wait_for(
                 adapter.search(query, limit=config.CANDIDATES_PER_MARKET),
-                timeout=config.MARKET_SEARCH_TIMEOUT_SECONDS,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
             self._record_market(adapter.name, "timeout")
             logger.warning(
                 "Поиск %s/%s не завершён за %.1f с; площадка пропущена",
-                adapter.name, query, config.MARKET_SEARCH_TIMEOUT_SECONDS,
+                adapter.name, query, timeout,
             )
             return []
         except Exception as exc:

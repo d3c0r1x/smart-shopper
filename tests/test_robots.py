@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import pytest
 
 from adapters.robots import RobotsCache, _parse_robots, _path_allowed, _split_url
 

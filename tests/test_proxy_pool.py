@@ -41,3 +41,13 @@ def test_build_config_socks_inbound():
     assert rs["shortId"] == srv["sid"]
     # фолбэк на direct всегда есть
     assert cfg["outbounds"][1]["protocol"] == "freedom"
+
+
+def test_xray_exe_honors_config_override(monkeypatch):
+    """Путь к xray берётся из config.XRAY_BINARY_PATH (env SHOPPER_XRAY_PATH)."""
+    import importlib
+    import config as cfg
+    import proxy_pool
+    monkeypatch.setattr(cfg, "XRAY_BINARY_PATH", "xray")
+    importlib.reload(proxy_pool)
+    assert str(proxy_pool.XRAY_EXE) == "xray"

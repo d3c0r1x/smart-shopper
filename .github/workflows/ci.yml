@@ -20,6 +20,11 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Lint with ruff
+        run: |
+          pip install ruff
+          ruff check . --select F,E9 --exclude miniapp
+
       - name: Compile all
         run: python -m compileall -q . -x "miniapp"
 

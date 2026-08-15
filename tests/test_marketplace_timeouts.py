@@ -45,6 +45,8 @@ def test_hanging_search_does_not_block_other_markets(monkeypatch):
     """Зависший поиск одной площадки должен завершиться пустым результатом."""
     monkeypatch.setattr(
         config, "MARKET_SEARCH_TIMEOUT_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(
+        config, "OZON_TIMEOUT_SECONDS", 0.01, raising=False)
 
     class SearchCache:
         async def cache_get_products(self, key):

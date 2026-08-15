@@ -87,14 +87,12 @@ async def main(args: argparse.Namespace) -> None:
     total = time.perf_counter() - t0
 
     # утечки: соединения и размер базы
-    conns = 0
     size = 0
     try:
         size = os.path.getsize(db_path)
         cur = await db._conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
         row = await cur.fetchone()
-        conns = 1  # один пул aiosqlite
         _ = row
     except Exception:  # noqa: BLE001
         pass

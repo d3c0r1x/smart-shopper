@@ -109,13 +109,11 @@ def test_ozon_traits_empty():
 
 def test_wb_reviews_split_pros_cons():
     """Разбивка отзыва WB на плюсы/минусы/текст (без шапки)."""
-    from adapters.wb_browser import WbBrowserAdapter
 
     # JS-логика разбивки воспроизведена в Python для проверки селекторов
     t = ("Татьяна 26 июля Достоинства:Качество хорошее, приятная на ощупь"
          "Недостатки:Свет пропускает, не прилегает плотно на крыльях носа")
-    pi, ni, di, ngi = (t.find("Плюсы товара"), t.find("Минусы товара"),
-                       t.find("Достоинства"), t.find("Недостатки"))
+    di, ngi = t.find("Достоинства"), t.find("Недостатки")
     assert di >= 0 and ngi > di
     pros = t[di + len("Достоинства"):ngi].strip()
     cons = t[ngi + len("Недостатки"):].strip()
@@ -137,7 +135,6 @@ def test_wb_card_extract_via_json():
     from adapters.wb_browser import WbBrowserAdapter
 
     # сэмпл-структура как в реальном DOM (см. _wb_chars.html)
-    import json as _json
     sample = {
         "title": "Маска для сна 3D, усовершенствованная",
         "brand": "HOME+",

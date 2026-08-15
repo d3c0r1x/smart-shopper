@@ -56,17 +56,21 @@ PROXY = os.getenv("SHOPPER_PROXY", "")
 # выходной IP. Пул запускает xray-инстансы и ротирует IP при блокировке.
 PROXY_POOL = os.getenv("SHOPPER_PROXY_POOL", "1") == "1"
 POOL_SIZE = int(os.getenv("SHOPPER_POOL_SIZE", "6"))
+# Путь к xray.exe для прокси-пула Happ. По умолчанию — стандартная установка
+# Happ на Windows; переопределяется через SHOPPER_XRAY_PATH (например "xray",
+# если бинарник лежит в PATH, — тогда пул переносим на Linux/macOS).
+XRAY_BINARY_PATH = os.getenv(
+    "SHOPPER_XRAY_PATH",
+    r"C:\Program Files\FlyFrogLLC\Happ\core\xray.exe",
+)
 # URL подписки (из логов Happ) — в корневом .env, не в репозитории.
 SUBSCRIPTION_URL = os.getenv("SHOPPER_SUBSCRIPTION_URL", "")
 MAX_RETRIES = int(os.getenv("SHOPPER_MAX_RETRIES", "3"))
 # Вежливая пауза между запросами к публичным эндпоинтам (секунды).
 POLITE_DELAY = float(os.getenv("SHOPPER_POLITE_DELAY", "0.4"))
-# Ступенчатый параллельный опрос площадок (ТЗ §5, latency p95).
-# Ozon стартует первым в одиночку, остальные — через OZON_HEAD_START
-# секунд параллельно: суммарное время -> максимуму, челлендж Ozon
-# при этом не ломается (проверено живым A/B).
+# Параллельный опрос площадок (ТЗ §5, latency p95): все адаптеры стартуют
+# одновременно, суммарное время -> максимуму по площадкам, а не сумме.
 PARALLEL_MARKETS = os.getenv("SHOPPER_PARALLEL_MARKETS", "1") == "1"
-OZON_HEAD_START = float(os.getenv("SHOPPER_OZON_HEAD_START", "3"))
 
 # Этичный парсинг (ТЗ §4): уважение robots.txt + кэш файла на 1 час.
 RESPECT_ROBOTS = os.getenv("SHOPPER_RESPECT_ROBOTS", "1") == "1"
@@ -104,6 +108,10 @@ CANDIDATES_PER_MARKET = int(os.getenv("SHOPPER_CANDIDATES_PER_MARKET", "10"))
 MARKET_SEARCH_TIMEOUT_SECONDS = float(
     os.getenv("SHOPPER_MARKET_SEARCH_TIMEOUT_SECONDS", "45")
 )
+# Ozon решает Antibot Challenge медленно (до ~40 с) и нестабильно. Он
+# опрашивается в фоне (не блокирует Яндекс/WB), поэтому ему даётся полное
+# окно решения челленджа; карточки приходят отдельным сообщением.
+OZON_TIMEOUT_SECONDS = float(os.getenv("SHOPPER_OZON_TIMEOUT_SECONDS", "60"))
 REVIEWS_PER_PRODUCT = int(os.getenv("SHOPPER_REVIEWS_PER_PRODUCT", "40"))
 REVIEWS_FETCH_TIMEOUT_SECONDS = float(
     os.getenv("SHOPPER_REVIEWS_FETCH_TIMEOUT_SECONDS", "15")

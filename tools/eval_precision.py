@@ -47,7 +47,7 @@ from adapters import build_adapters  # noqa: E402
 from core.orchestrator import Orchestrator  # noqa: E402
 from llm.gateway import LLMGateway  # noqa: E402
 from models import SessionState  # noqa: E402
-from search.structfilter import StructFilters, parse_structural  # noqa: E402
+from search.structfilter import parse_structural  # noqa: E402
 from storage.db import Database  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING)

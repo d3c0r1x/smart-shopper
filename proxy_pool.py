@@ -10,8 +10,8 @@
 1. `update()` — скачивает подписку по `SHOPPER_SUBSCRIPTION_URL`,
    декодирует base64, парсит vless-ссылки и кэширует в `happ_servers.json`
    (файл в .gitignore — внутри UUID и ключи reality).
-2. `_ensure_launched()` — лениво запускает N инстансов xray (из установки
-   Happ, `C:\\Program Files\\FlyFrogLLC\\Happ\\core\\xray.exe`), каждый на
+2. `_ensure_launched()` — лениво запускает N инстансов xray (путь из
+   `config.XRAY_BINARY_PATH`, см. SHOPPER_XRAY_PATH), каждый на
    своём socks-порту 10811+ с одним сервером подписки в outbound.
 3. `next()` — круговой выбор прокси («socks5://127.0.0.1:PORT»).
 4. `down()` — останавливает инстансы.
@@ -36,7 +36,7 @@ import config
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
-XRAY_EXE = Path(r"C:\Program Files\FlyFrogLLC\Happ\core\xray.exe")
+XRAY_EXE = Path(config.XRAY_BINARY_PATH)  # переопределяется SHOPPER_XRAY_PATH
 CACHE_FILE = BASE_DIR / "happ_servers.json"
 
 BASE_PORT = 10811

@@ -36,16 +36,15 @@ from aiogram.types import (CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Mess
 import config
 from adapters import build_adapters
 from core.orchestrator import Orchestrator, SearchOutcome
-from keyboards import (HOME_DATA, MENU, compare_keyboard, home_keyboard,
+from keyboards import (MENU, compare_keyboard, home_keyboard,
                        product_card_keyboard, product_ref, reviews_keyboard,
                        settings_keyboard)
 from llm.gateway import BudgetExceeded, LLMGateway
-from llm.schemas import FreeformReply
-from matcher.matcher import (compare_across_all, compare_across_markets,
-                             find_counterpart)
+from matcher.matcher import (compare_across_all, compare_across_markets)
 import web as webmod
 from middlewares import LoggingMiddleware, ThrottlingMiddleware
 from models import Product, ReviewAnalysis, SessionState
+from search.embeddings import warmup
 from storage.db import Database
 from vision.service import build_data_uri, describe_photo, mime_for
 
@@ -267,6 +266,7 @@ async def on_photo(message: Message) -> None:
     user_id = message.from_user.id
     state = await db.get_session(user_id)
     progress = await message.answer("📸 Скачиваю фотографию…")
+    main_sent = asyncio.Event()
     try:
         photo = message.photo[-1]
         file = await message.bot.get_file(photo.file_id)
@@ -279,14 +279,28 @@ async def on_photo(message: Message) -> None:
 
         desc = await describe_photo(llm, data_uri)
         markets = _markets(state)
+
+        async def late_cb(products: list[Product]) -> None:
+            # досылаем Ozon ПОСЛЕ основного ответа, не перебивая его
+            try:
+                await main_sent.wait()
+                await message.answer("🛒 Тем временем нашлось ещё на Ozon 👇")
+                for p in products:
+                    await _send_card(message, p)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Поздняя доставка Ozon не удалась: %s", exc)
+
         outcome = await orch.photo_search(user_id, desc, state, progress_cb,
-                                          markets=markets)
+                                          markets=markets, late_cb=late_cb)
         await progress.delete()
         await _send_outcome(message, outcome, "похожие на фото")
+        main_sent.set()
     except BudgetExceeded:
+        main_sent.set()
         info = await llm.budget_info()
         await progress.edit_text(_budget_text(info))
     except Exception as exc:  # pragma: no cover
+        main_sent.set()
         logger.exception("photo flow failed")
         await progress.edit_text(f"Не получилось обработать фото: {exc}")
 
@@ -482,18 +496,34 @@ async def _run_search(message: Message, user_text: str) -> None:
     user_id = message.from_user.id
     state = await db.get_session(user_id)
     progress = await message.answer("🔎 Начинаю поиск…")
+    main_sent = asyncio.Event()
     try:
         async def progress_cb(step: str) -> None:
             await progress.edit_text(step)
 
+        async def late_cb(products: list[Product]) -> None:
+            # Ozon решил челлендж позже — досылаем его карточки ПОСЛЕ
+            # основного ответа отдельным сообщением, не перебивая его.
+            try:
+                await main_sent.wait()
+                await message.answer("🛒 Тем временем нашлось ещё на Ozon 👇")
+                for p in products:
+                    await _send_card(message, p)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Поздняя доставка Ozon не удалась: %s", exc)
+
         outcome = await orch.search_with_constraints(
-            user_id, user_text, state, progress_cb, markets=_markets(state))
+            user_id, user_text, state, progress_cb, markets=_markets(state),
+            late_cb=late_cb)
         await _send_outcome(message, outcome, f"по запросу «{user_text[:40]}»")
+        main_sent.set()
         await progress.delete()
     except BudgetExceeded:
+        main_sent.set()
         info = await llm.budget_info()
         await progress.edit_text(_budget_text(info))
     except Exception as exc:  # pragma: no cover
+        main_sent.set()
         logger.exception("search flow failed")
         await progress.edit_text(f"Не получилось выполнить поиск: {exc}")
 
@@ -568,7 +598,6 @@ async def _send_card(message: Message, p: Product,
                 p = card
         except Exception as exc:  # pragma: no cover
             logger.warning("Карточка не обогащена: %s", exc)
-    state = await db.get_session(message.from_user.id)
     favorites = await db.list_favorites(message.from_user.id)
     favored = any(f.ext_id == p.ext_id and f.marketplace == p.marketplace
                   for f in favorites)
@@ -850,6 +879,20 @@ async def _handle_update_error(event: ErrorEvent) -> None:
                  update_id, exception, exc_info=exception)
 
 
+async def cache_cleanup_loop(db: Database, interval: float = 3600.0) -> None:
+    """Фоновая очистка истёкшего кэша: раз в час, чтобы таблица cache
+    не росла бесконечно между рестартами (стабильность, ТЗ §4).
+    Ошибка очистки не роняет бота — только логируется."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            removed = await db.cleanup_expired()
+            if removed:
+                logger.info("Фоновая очистка кэша: удалено %d записей", removed)
+        except Exception as exc:
+            logger.warning("Фоновая очистка кэша не удалась: %s", exc)
+
+
 async def main() -> None:
     if not config.BOT_TOKEN:
         raise SystemExit("SHOPPER_BOT_TOKEN не задан — проверьте .env / run_bot12.cmd")
@@ -865,6 +908,18 @@ async def main() -> None:
     saved_profile = await db.get_setting("profile", config.LLM_PROFILE)
     llm.set_profile(saved_profile)
     await orch._db.cleanup_expired()
+    _cleanup_task = asyncio.create_task(cache_cleanup_loop(db))
+
+    # Прогрев семантического слоя: первая загрузка bge-m3 в VRAM
+    # (~15–20 с) происходит на старте, а не на первом поиске пользователя.
+    if orch._reranker is not None:
+        try:
+            ok = await asyncio.wait_for(
+                warmup(orch._reranker._embedder), timeout=45)
+            logger.info("Прогрев эмбеддингов: %s",
+                        "ok" if ok else "недоступны")
+        except Exception as exc:  # недоступная Ollama не должна ронять старт
+            logger.warning("Прогрев эмбеддингов не удался: %s", exc)
 
     # web_app-кнопка у поля ввода (PRD: «раздаёт кнопку открытия Mini App»)
     try:
@@ -892,6 +947,11 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        _cleanup_task.cancel()
+        try:
+            await _cleanup_task
+        except asyncio.CancelledError:
+            pass
         await runner.cleanup()
         await db.close()
         await llm.aclose()

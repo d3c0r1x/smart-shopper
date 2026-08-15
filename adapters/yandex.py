@@ -87,7 +87,6 @@ class YandexMarketAdapter(BaseAdapter):
 
     async def _search_json(self, ep: dict, query: str, limit: int) -> list[Product]:
         url = ep["url"]
-        method = ep.get("method", "GET")
         status, text = await self._get(
             url, extra_headers=ep.get("request_headers"))
         if status != 200:
@@ -97,9 +96,9 @@ class YandexMarketAdapter(BaseAdapter):
             data = json.loads(text)
         except json.JSONDecodeError:
             return []
-        return self._parse_json_search(data, limit)
+        return self._parse_json_search(data, limit, query)
 
-    def _parse_json_search(self, data, limit: int) -> list[Product]:
+    def _parse_json_search(self, data, limit: int, query: str) -> list[Product]:
         """Рекурсивный поиск карточек товаров в JSON (устойчив к структуре)."""
         raw: list[dict] = []
         _find_product_objs(data, raw)

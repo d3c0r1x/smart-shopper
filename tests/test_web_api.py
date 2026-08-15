@@ -9,7 +9,6 @@ import tempfile
 import time
 from urllib.parse import urlencode
 
-from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import config
