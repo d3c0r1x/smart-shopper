@@ -58,6 +58,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Момент старта процесса — для uptime в /stats
+_STARTED_AT = __import__("time").monotonic()
+
 router = Router()
 db = Database(config.DB_PATH)
 llm = LLMGateway(db)
@@ -169,12 +172,14 @@ async def cmd_budget(message: Message) -> None:
 async def cmd_stats(message: Message) -> None:
     stats = await db.stats()
     cleaned = await db.cleanup_expired()
+    uptime_min = int((__import__("time").monotonic() - _STARTED_AT) // 60)
     await message.answer(
         "📊 Сводка по базе:\n"
         f"• сессий: {stats['sessions']}\n"
         f"• избранного: {stats['favorites']}\n"
         f"• записей кэша: {stats['cache']}\n"
-        f"• очищено истёкшего кэша: {cleaned}"
+        f"• очищено истёкшего кэша: {cleaned}\n"
+        f"• аптайм процесса: {uptime_min} мин"
     )
 
 
