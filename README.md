@@ -1,5 +1,7 @@
 # Smart Shopper — ИИ-ассистент покупок: Ozon · Яндекс Маркет · Wildberries
 
+[![CI](https://github.com/d3c0r1x/smart-shopper/actions/workflows/ci.yml/badge.svg)](https://github.com/d3c0r1x/smart-shopper/actions/workflows/ci.yml)
+
 «ChatGPT для маркетплейсов»: вы общаетесь с ассистентом свободным текстом или
 фотографией, а он отвечает рекомендациями, которые опираются **только на
 реальные данные маркетплейсов** — карточки, цены, отзывы на Ozon,
