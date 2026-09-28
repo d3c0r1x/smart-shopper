@@ -133,7 +133,7 @@ project12_smart_shopper/
 
 ## 6. Развёртывание
 
-- Локально: `run_bot12.cmd` (читает ключи из корневого `.env`), или
+- Локально: `start.bat` (читает ключи из корневого `.env`), или
   `SHOPPER_DEMO_MODE=1` — без сети и ключей.
 - Локальная LLM: `ollama pull qwen2.5:3b-instruct-q4_K_M` и
   `ollama pull bge-m3`; включить `SHOPPER_LOCAL_LLM=1`, `SHOPPER_SEMANTIC_ENABLED=1`.

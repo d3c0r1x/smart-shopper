@@ -900,7 +900,7 @@ async def cache_cleanup_loop(db: Database, interval: float = 3600.0) -> None:
 
 async def main() -> None:
     if not config.BOT_TOKEN:
-        raise SystemExit("SHOPPER_BOT_TOKEN не задан — проверьте .env / run_bot12.cmd")
+        raise SystemExit("SHOPPER_BOT_TOKEN не задан — проверьте .env / start.bat")
     bot = Bot(config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
