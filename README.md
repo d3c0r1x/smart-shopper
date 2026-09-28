@@ -1,173 +1,66 @@
-# Smart Shopper — ИИ-ассистент покупок для Ozon, Яндекс Маркета и Wildberries
+# Smart Shopper
 
-[![CI](https://github.com/d3c0r1x/smart-shopper/actions/workflows/ci.yml/badge.svg)](https://github.com/d3c0r1x/smart-shopper/actions/workflows/ci.yml)
+**AI shopping assistant for Ozon, Yandex Market and Wildberries.**
 
-**[🛍 Mini App (демо)](https://d3c0r1x.github.io/smart-shopper/)** ·
-**[🏗 Архитектура](docs/ARCHITECTURE.md)** ·
-**[⚙️ Разработка](docs/DEVELOPMENT.md)**
+[![CI](https://github.com/d3c0r1x/smart-shopper/actions/workflows/ci.yml/badge.svg)](https://github.com/d3c0r1x/smart-shopper/actions/workflows/ci.yml) · [Live demo](https://d3c0r1x.github.io/smart-shopper/)
 
-Онлайн-бота нет: поллинг Telegram требует постоянно работающего процесса, а вся
-ценность проекта — в коде и архитектуре. Бот поднимается одной командой локально
-(см. «Local setup»), а Mini App открыт в демо-режиме по ссылке выше.
+Text or photo in → real marketplace data → filtering/ranking → review analysis → recommendation.
 
-> **EN:** An AI shopping assistant for Russian marketplaces. Free-form text or a
-> photo in, grounded recommendations out — every product, price and review comes
-> from a real marketplace adapter, never from the model. One backend, two
-> interfaces: a Telegram bot and a React Mini App sharing the same session.
-> 165 tests.
+## What it does
 
-## Problem
+- searches products by free-form text and photo;
+- combines data from multiple marketplace adapters;
+- compares offers and deduplicates the same product across stores;
+- checks user requirements against actual reviews;
+- keeps one session between Telegram and the React Mini App;
+- uses an LLM gateway with fallback providers and a request budget;
+- has a deterministic demo mode so the project can be shown without private credentials.
 
-Один и тот же товар живёт на трёх маркетплейсах с разными ценами, а выбор
-упирается в отзывы: «есть ли место для ресниц у этой маски для сна» — это
-невозможно выяснить по рейтингу 4.8. Люди открывают десять вкладок, читают
-отзывы вручную и всё равно покупают наугад.
-
-Отдельная проблема — доверие к ИИ-ответам: обычный чат-бот уверенно выдумывает
-товары и цены, а по ссылке ничего не находится.
-
-## What I built
-
-Telegram-бот и Telegram Mini App, которые принимают свободный текст или фото и
-возвращают рекомендации, **опирающиеся только на реальные данные маркетплейсов**.
-
-- **🔎 Умный поиск** — «до 1200 ₽», «чёрный», «пространство для ресниц» →
-  извлечение требований → поиск на площадках → проверка каждого требования по
-  отзывам (✅ подтверждено / ❌ опровергнуто / ⚠️ нет данных) с цитатами.
-- **📸 Поиск по фото** — фото → vision-модель → структурное описание → поиск
-  похожих → ранжирование по совпадению признаков.
-- **⚖️ Сравнение цен** — «Ozon: 990 ₽ · ЯМ: 1 050 ₽ · WB: 780 ₽ — выгоднее на WB
-  на 26%»; матчинг через EAN → нечёткое название → LLM-арбитр.
-- **📝 Кликабельные отзывы** — отдельное сообщение с текстом, звёздами, автором
-  и датой, а не ссылка «почитайте на сайте».
-- **🧠 Память диалога** — «а подешевле», «только чёрные» применяются к прошлому
-  поиску, а не начинают его заново; сессия общая между чатом и Mini App.
-- **💸 Честный бюджет LLM** — дневной лимит запросов, троттлинг, fallback между
-  провайдерами, прозрачное сообщение при исчерпании лимита.
-- **⚙️ Эксплуатация** — `/diag` (доступность адаптеров и моделей), `/stats`,
-  `/health`, телеметрия p95, избранное, профили моделей fast/quality.
-
-> Note: Review Intelligence (проверка требований по отзывам) начинался как
-> отдельный прототип — [ai-review-analyst](https://github.com/d3c0r1x/ai-review-analyst) —
-> и был затем доработан и встроен в основную систему.
-
-## Архитектура
+## Architecture
 
 ```
-Telegram (aiogram 3) ─┐
-                      ├─► core/orchestrator.py  ← единая сессия в SQLite
-Mini App (React) ─────┘        │
-   web.py (HTTP-API,           │  1. извлечение требований (LLM, JSON-схема)
-   HMAC initData)              │  2. структурный префильтр (цена/цвет/рейтинг)
-                               │  3. гибридный реранк: семантика 0.45 +
-                               │     лексика 0.35 + структура 0.20
-                               │  4. Review Intelligence: вердикты по отзывам
-                               │  5. коллапс одного SKU с трёх площадок
-                               ▼
-   llm/gateway.py ── Ollama (локально) → Mistral → OpenRouter :free → mock
-   adapters/      ── Ozon · Яндекс Маркет · Wildberries (+ демо-каталог)
-   matcher/       ── EAN → нечёткое название → LLM-арбитр
-   storage/db.py  ── SQLite: сессии, кэш, избранное, бюджет
+Telegram bot ─┐
+              ├─→ FastAPI/HTTP layer → orchestrator
+React Mini App┘                         ├─ marketplace adapters
+                                        ├─ hybrid matcher/ranker
+                                        ├─ review intelligence
+                                        ├─ LLM gateway
+                                        └─ SQLite/session state
 ```
 
-Поток одного хода: вход → оркестратор → план действий от LLM (инструменты:
-поиск, отзывы, сравнение) → исполнение адаптерами → факты возвращаются модели →
-финальный ответ и карточки → рендер.
+The LLM extracts intent and helps with ranking/review reasoning; product facts come from adapters. The project is designed to avoid inventing products or prices when source data is unavailable.
 
-## Key engineering decisions
+## Engineering highlights
 
-1. **Grounding вместо генерации.** Модель не создаёт карточки: она извлекает
-   ограничения, ранжирует и читает отзывы. Всё, что видит пользователь, пришло
-   из адаптера. Нет данных — честное «не нашёл».
-2. **Гибридный поиск из трёх слоёв.** Чистые эмбеддинги не держат жёсткие
-   ограничения («до 1200 ₽», «чёрный»), чистая лексика не понимает смысл.
-   Семантика + лексика + жёсткий структурный префильтр работают вместе.
-3. **Отзывы как проверка требований.** Не «рейтинг 4.8», а вердикт по каждому
-   требованию запроса с цитатами; результаты кэшируются на 24 часа — это самая
-   дорогая операция в системе.
-4. **Fallback-цепочки вместо одной модели.** Бесплатные модели регулярно
-   снимаются с публикации; хардкод одной модели = гарантированная поломка через
-   месяц. В конце цепочки — детерминированный mock, поэтому бот не падает.
-5. **Один backend — два интерфейса.** Состояние сессии в БД, а не в памяти
-   процесса: уточнение из Mini App применяется к тому же поиску, что был в чате.
-6. **Честность вместо подмены.** Официальных API для поиска по чужому каталогу
-   не существует; непустой результат даёт браузерный канал с пулом прокси.
-   Пустой результат остаётся пустым — выдуманные товары не подставляются никогда.
+**Grounding.** Product cards, prices and reviews are sourced from marketplace adapters rather than generated by the model.
 
-Подробно — [docs/DECISIONS.md](docs/DECISIONS.md) (включая отвергнутые
-альтернативы: Crawlee/Scrapy, векторные БД, LangGraph).
+**Hybrid search.** Semantic, lexical and structural filters are combined so hard constraints such as price or colour are not left entirely to embeddings.
 
-## Tech Stack
+**Fallbacks.** The LLM layer can move between providers and ultimately fall back to a deterministic mock for reproducible demos.
 
-Python 3.12 · aiogram 3 · aiohttp · aiosqlite · pydantic · Playwright + Chrome ·
-xray (пул прокси) · Ollama (bge-m3, qwen2.5) · Mistral API · OpenRouter ·
-React 19 + Vite + TypeScript (Mini App) · Docker · GitHub Actions
+**One backend, two interfaces.** Telegram and the Mini App share the same session state.
+
+## Stack
+
+Python 3.12 · aiogram 3 · aiohttp · aiosqlite · Pydantic · Playwright · Ollama · Mistral · OpenRouter · React 19 · Vite · TypeScript · Docker · GitHub Actions
 
 ## Tests
 
 ```bash
-pytest -q     # 165 тестов
+pytest -q
 ```
 
-Ключевое: fallback-цепочка (все модели упали → mock, схема соблюдена), дневной
-бюджет и троттлинг, оба сценария end-to-end, матчинг товаров, гибридный реранк,
-proxy pool, guardrails (OWASP LLM), кэш и TTL, HTTP-API с проверкой подписи
-`initData` — и интеграционные тесты через **настоящий `Dispatcher`** с
-перехватом Bot API, а не через моки хендлеров.
-
-Метрики качества (Precision@K, p95, uptime, coverage, freshness) и последний
-прогон — [docs/EVAL.md](docs/EVAL.md).
+The repository currently contains **165 tests** covering search/matching, adapters, review checks, fallbacks, budgeting, API behaviour, Telegram flows, security/guardrails and cache logic.
 
 ## Limitations
 
-- **Хранилище — SQLite.** Продакшн-таргет — PostgreSQL + Redis; схема
-  спроектирована под миграцию без смены контрактов методов.
-- **Антибот.** Без прокси с чистым IP публичные каналы площадок отдают пустой
-  результат; это ограничение площадок, а не кода (см.
-  [DECISIONS.md §8](docs/DECISIONS.md)).
-- **Клиент LLM создаётся на каждый запрос** — оптимизация (пул сессий) в планах.
-- **Фото в Mini App** в демо-режиме возвращает описание сценария «кроссовки»;
-  реальное распознавание — через vision-модель при наличии ключа.
-- **Развёртывание Mini App** — GitHub Pages + HTTPS-хостинг бэкенда и webhook
-  вместо polling; сейчас бот работает в polling.
-
-## Local setup
-
-```bash
-pip install -r requirements.txt
-cp .env.example .env
-python bot.py
-```
-
-Самое быстрое — без ключей вообще: `SHOPPER_DEMO_MODE=1`, тогда маркетплейсы
-работают на встроенном каталоге, а LLM-слой заменён детерминированным mock-
-провайдером. Полная инструкция (Mini App, HTTP-API, Docker, прокси, Ollama,
-фиксация эндпоинтов) — [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+- live marketplace access may require proxies or other anti-bot workarounds;
+- production storage would be PostgreSQL + Redis rather than SQLite;
+- real vision/LLM behaviour depends on external or local model availability;
+- the public demo uses deterministic data where private credentials are not available.
 
 ## AI-assisted development
 
-Код написан в паре с AI-ассистентом, и это осознанная часть метода работы.
+AI tools were used extensively for implementation drafts and routine code. I owned task decomposition, architecture choices, integrations, debugging, validation, tests and final behaviour.
 
-- **AI — ускоритель:** черновики модулей, рутинные адаптеры, генерация тестовых
-  кейсов, разбор незнакомых форматов ответов маркетплейсов.
-- **На мне:** декомпозиция задачи; выбор архитектуры (один backend на два
-  интерфейса, grounding, слои поиска); интеграции с API маркетплейсов, LLM и
-  Telegram; отладка реальных отказов (антибот, ротация моделей, нечёткие
-  заголовки); проверка сгенерированного кода; сценарии тестов; финальное
-  поведение продукта.
-
-Ни один сгенерированный фрагмент не считается рабочим, пока не прошёл тесты и
-живой прогон: антибот-поведение, fallback-цепочки и бюджеты проверялись на
-живых ключах и реальных площадках.
-
-## Docs
-
-[ARCHITECTURE.md](docs/ARCHITECTURE.md) — карта «требование → реализация» и
-матрица лицензий · [DECISIONS.md](docs/DECISIONS.md) — решения и отвергнутые
-альтернативы · [SECURITY.md](docs/SECURITY.md) — безопасность, supply chain,
-изоляция · [EVAL.md](docs/EVAL.md) — метрики качества · 
-[DEVELOPMENT.md](docs/DEVELOPMENT.md) — запуск и эксплуатация.
-
-## Лицензия
-
-MIT — см. [LICENSE](LICENSE).
+See [docs/DECISIONS.md](docs/DECISIONS.md) for the deeper engineering decisions.
